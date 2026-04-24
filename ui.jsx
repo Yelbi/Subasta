@@ -319,9 +319,178 @@ function calcNetWorthArr(p) {
   return (p.cash||0)+inv+prop-debt;
 }
 
+// ── SOUND BUTTON ─────────────────────────────
+function SoundToggle() {
+  const [muted, setMuted] = useState(window.SFX?.isMuted?.() || false);
+  return (
+    <button onClick={()=>{ const m=window.SFX?.toggleMute?.(); setMuted(m); }}
+      style={{background:'none',border:`1px solid ${BORDER}`,borderRadius:4,
+        padding:'5px 8px',cursor:'pointer',color:muted?'#444':GOLD_DIM,
+        display:'flex',alignItems:'center',gap:5,fontFamily:"'Jost',sans-serif",fontSize:11,
+        transition:'color 0.2s'}}>
+      {muted
+        ? <><Ico name="x" size={12}/> Sonido</>
+        : <><Ico name="star" size={12}/> Sonido</>}
+    </button>
+  );
+}
+
+// ── LEADERBOARD BAR ───────────────────────────
+function LeaderboardBar({ players, myId }) {
+  const sorted = [...players].sort((a,b)=>calcNetWorthArr(b)-calcNetWorthArr(a));
+  return (
+    <div style={{background:BG_CARD2,borderBottom:`1px solid ${BORDER}`,
+      padding:'6px 16px',display:'flex',alignItems:'center',gap:4,
+      overflowX:'auto',flexShrink:0}}>
+      <span style={{color:'#555',fontFamily:"'Jost',sans-serif",fontSize:10,
+        letterSpacing:'0.1em',marginRight:6,whiteSpace:'nowrap'}}>RANKING</span>
+      {sorted.map((p,i)=>{
+        const isMe = p.id===myId;
+        const nw = calcNetWorthArr(p);
+        const isBankrupt = p.bankrupt;
+        return (
+          <div key={p.id} style={{display:'flex',alignItems:'center',gap:5,
+            background: isMe?'rgba(218,165,32,0.08)':'transparent',
+            border:`1px solid ${isMe?GOLD_DIM:BORDER}`,borderRadius:20,
+            padding:'3px 10px',flexShrink:0,
+            opacity: isBankrupt?0.5:1}}>
+            <span style={{color:'#555',fontFamily:"'Jost',sans-serif",fontSize:9,fontWeight:700}}>{i+1}</span>
+            <Avatar name={p.name||'?'} colorIndex={p.colorIndex||0} size={18}/>
+            <span style={{color:isMe?GOLD_LIGHT:'#888',fontFamily:"'Jost',sans-serif",
+              fontSize:11,maxWidth:70,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+              {p.name}
+            </span>
+            <span style={{color:isMe?GOLD:GOLD_DIM,fontFamily:"'Playfair Display',serif",
+              fontSize:11,fontWeight:700}}>{fmt(nw)}</span>
+            {isBankrupt && <span style={{color:RED,fontSize:9,fontFamily:"'Jost',sans-serif"}}>QUIEBRA</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── MULTI-LINE NET WORTH CHART ────────────────
+function NetWorthChart({ players, width=560, height=180 }) {
+  const allHistory = players.map(p=>(p.history||[]).map(h=>h.netWorth||0));
+  const maxMonth = Math.max(...players.map(p=>(p.history||[]).length), 1);
+  if (maxMonth < 2) return (
+    <div style={{color:'#555',fontFamily:"'Jost',sans-serif",fontSize:12,
+      textAlign:'center',padding:20}}>
+      La gráfica aparecerá desde el mes 2.
+    </div>
+  );
+  const allVals = allHistory.flat().filter(v=>v!=null);
+  const minV = Math.min(0,...allVals), maxV = Math.max(1,...allVals);
+  const range = maxV-minV||1;
+  const PAD = 40;
+  const W = width-PAD, H = height-PAD*0.5;
+
+  const toX = (i) => PAD + (i/(maxMonth-1))*(W-PAD);
+  const toY = (v) => H*0.9 - ((v-minV)/range)*(H*0.8);
+
+  const colors = GD.PLAYER_COLORS.map(c=>c.bg);
+
+  return (
+    <svg width={width} height={height} style={{display:'block',overflow:'visible'}}>
+      {/* Grid lines */}
+      {[0,0.25,0.5,0.75,1].map((t,i)=>{
+        const y = H*0.9 - t*(H*0.8);
+        const val = minV + t*range;
+        return (
+          <g key={i}>
+            <line x1={PAD} y1={y} x2={W} y2={y}
+              stroke={BORDER} strokeWidth="1" strokeDasharray="4,4"/>
+            <text x={PAD-4} y={y+4} textAnchor="end"
+              fill="#555" fontSize="9" fontFamily="Jost,sans-serif">
+              {fmt(val)}
+            </text>
+          </g>
+        );
+      })}
+      {/* Lines per player */}
+      {players.map((p,pi)=>{
+        const hist = p.history||[];
+        if(hist.length<2) return null;
+        const pts = hist.map((h,i)=>[toX(i),toY(h.netWorth||0)]);
+        const d = `M${pts[0].join(',')} ${pts.slice(1).map(([x,y])=>`L${x},${y}`).join(' ')}`;
+        return (
+          <g key={p.id}>
+            <path d={d} fill="none" stroke={colors[pi%colors.length]}
+              strokeWidth="2" strokeLinejoin="round"/>
+            <circle cx={pts[pts.length-1][0]} cy={pts[pts.length-1][1]}
+              r="4" fill={colors[pi%colors.length]}/>
+          </g>
+        );
+      })}
+      {/* Legend */}
+      {players.map((p,pi)=>(
+        <g key={p.id} transform={`translate(${PAD + pi*90},${height-10})`}>
+          <rect width="12" height="3" y="-1" rx="1"
+            fill={colors[pi%colors.length]}/>
+          <text x="16" y="3" fill="#888" fontSize="9" fontFamily="Jost,sans-serif">
+            {(p.name||'?').slice(0,10)}
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+// ── EVENT BANNER ──────────────────────────────
+function EventBanner({ event }) {
+  if (!event) return null;
+  const severityColors = {
+    good:    { bg:'rgba(0,120,50,0.15)',  border:GREEN_CLR,  color:GREEN_CLR  },
+    bad:     { bg:'rgba(180,20,20,0.15)', border:RED,        color:RED        },
+    mixed:   { bg:'rgba(218,165,32,0.10)',border:GOLD_DIM,   color:GOLD       },
+    neutral: { bg:'rgba(80,80,80,0.1)',   border:BORDER2,    color:'#888'     },
+  };
+  const sc = severityColors[event.severity]||severityColors.neutral;
+  const mods = Object.entries(event.modifiers||{});
+
+  return (
+    <div style={{...sc,border:`1px solid ${sc.border}`,borderRadius:8,
+      padding:'12px 16px',marginBottom:14}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+        <Ico name={event.icon||'alert-triangle'} size={16} color={sc.color}/>
+        <span style={{color:sc.color,fontFamily:"'Playfair Display',serif",
+          fontSize:15,fontWeight:600}}>{event.name}</span>
+        <span style={{color:'#666',fontFamily:"'Jost',sans-serif",fontSize:10,
+          letterSpacing:'0.1em',marginLeft:'auto',textTransform:'uppercase'}}>
+          Evento del mes
+        </span>
+      </div>
+      <p style={{color:'#999',fontFamily:"'Jost',sans-serif",fontSize:12,
+        margin:'0 0 8px',lineHeight:1.5}}>{event.desc}</p>
+      {mods.length>0 && (
+        <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+          {mods.map(([inv,mod])=>{
+            const it=GD.INVESTMENTS.find(i=>i.id===inv);
+            return (
+              <div key={inv} style={{display:'flex',alignItems:'center',gap:5,
+                background:'rgba(0,0,0,0.2)',borderRadius:4,padding:'3px 8px'}}>
+                <Ico name={inv} size={11} color={mod>=0?GREEN_CLR:RED}/>
+                <span style={{color:'#888',fontFamily:"'Jost',sans-serif",fontSize:11}}>
+                  {it?.name.split(' ')[0]}
+                </span>
+                <span style={{color:mod>=0?GREEN_CLR:RED,fontFamily:"'Jost',sans-serif",
+                  fontSize:11,fontWeight:600}}>
+                  {mod>=0?'+':''}{(mod*100).toFixed(0)}%
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 Object.assign(window, {
   GOLD,GOLD_LIGHT,GOLD_DIM,RED,GREEN_CLR,BG,BG_CARD,BG_CARD2,BORDER,BORDER2,
   fmt,fmtFull,seededRand,calcNetWorth,calcNetWorthArr,
   Ico,Avatar,GoldBtn,Card,GoldTitle,MoneyDisplay,GoldDivider,
   Sparkline,RouletteWheel,Risk,WaitingFor,EffectTag,
+  SoundToggle,LeaderboardBar,NetWorthChart,EventBanner,
 });

@@ -327,11 +327,14 @@ function WaitingRoom({ room, myId, fbUrl, roomCode, onLeave }) {
     players.forEach(p=>{ targets[p.id]=Math.floor(Math.random()*GD.ROULETTE.length); });
     const waiting = {};
     players.forEach(p=>{ waiting[p.id]=true; });
+    const propDeck = [...GD.AUCTION_PROPERTIES].sort(()=>Math.random()-0.5);
     await fbPatch(fbUrl, `rooms/${roomCode}`, {
       'meta/status':'playing',
       'game/phase':'roulette',
       'game/rouletteTargets':targets,
       'game/waitingFor':waiting,
+      'game/propertyDeck':propDeck,
+      'game/propertyDeckIdx':0,
     });
   };
 
@@ -442,48 +445,74 @@ function StandingsScreen({ room, myId, fbUrl, roomCode, isHost }) {
     const newMonth = month+1;
     const waiting = {};
     Object.values(room.players||{}).forEach(p=>{ waiting[p.id]=true; });
+    const evtIdx = Math.floor(seededRand(room.game?.gameSeed+newMonth*17)*GD.MARKET_EVENTS.length);
+    const currentEvent = GD.MARKET_EVENTS[evtIdx];
+    const shuffledNews = [...GD.MARKET_NEWS].sort(()=>Math.random()-0.5).slice(0,3);
     await fbPatch(fbUrl, `rooms/${roomCode}`, {
       'game/phase': newMonth>12?'final':'invest',
       'game/month': newMonth,
       'game/waitingFor': waiting,
       'game/investPlans': null,
+      'game/insuranceBuyers': null,
+      'game/currentEvent': currentEvent,
+      'game/currentNews': shuffledNews,
     });
   };
 
   return (
-    <div style={{minHeight:'100vh',background:BG,display:'flex',flexDirection:'column',
-      alignItems:'center',justifyContent:'center',padding:24,gap:20}}>
-      <GoldTitle size="lg">Fin del Mes {month}</GoldTitle>
-      <GoldDivider/>
-      <div style={{width:'100%',maxWidth:500,display:'flex',flexDirection:'column',gap:9}}>
-        {players.map((p,i)=>{
-          const nw=calcNetWorthArr(p);
-          return (
-            <Card key={p.id} glow={i===0} style={{display:'flex',justifyContent:'space-between',
-              alignItems:'center',padding:'12px 18px'}}>
-              <div style={{display:'flex',alignItems:'center',gap:12}}>
-                <span style={{color:GOLD_DIM,fontFamily:"'Playfair Display',serif",
-                  fontSize:13,fontWeight:700,width:20,textAlign:'center'}}>{medals[i]}</span>
-                <Avatar name={p.name||'?'} colorIndex={p.colorIndex||0} size={34}/>
-                <div>
-                  <div style={{color:GOLD_LIGHT,fontFamily:"'Playfair Display',serif",fontSize:14,fontWeight:600}}>{p.name}</div>
-                  <div style={{color:'#666',fontFamily:"'Jost',sans-serif",fontSize:11}}>
-                    {fmtFull(p.cash||0)} efectivo · {(p.properties||[]).length} prop.
+    <div style={{minHeight:'100vh',background:BG,padding:'24px 20px',boxSizing:'border-box'}}>
+      <div style={{maxWidth:640,margin:'0 auto'}}>
+        <div style={{textAlign:'center',marginBottom:20}}>
+          <GoldTitle size="lg">Fin del Mes {month}</GoldTitle>
+          <GoldDivider/>
+        </div>
+
+        {/* Rankings */}
+        <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:20}}>
+          {players.map((p,i)=>{
+            const nw=calcNetWorthArr(p);
+            return (
+              <Card key={p.id} glow={i===0} style={{display:'flex',
+                justifyContent:'space-between',alignItems:'center',padding:'12px 18px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:10}}>
+                  <span style={{color:GOLD_DIM,fontFamily:"'Playfair Display',serif",
+                    fontSize:12,fontWeight:700,width:18}}>{medals[i]}</span>
+                  <Avatar name={p.name||'?'} colorIndex={p.colorIndex||0} size={34}/>
+                  <div>
+                    <div style={{color:GOLD_LIGHT,fontFamily:"'Playfair Display',serif",
+                      fontSize:14,fontWeight:600}}>{p.name}</div>
+                    <div style={{color:'#666',fontFamily:"'Jost',sans-serif",fontSize:11}}>
+                      {fmtFull(p.cash||0)} efectivo · {toArr(p.properties).length} prop.
+                      {p.bankrupt&&<span style={{color:RED,marginLeft:6}}>QUIEBRA</span>}
+                    </div>
                   </div>
                 </div>
-              </div>
-              <MoneyDisplay amount={nw} size="md"/>
-            </Card>
-          );
-        })}
+                <MoneyDisplay amount={nw} size="md"/>
+              </Card>
+            );
+          })}
+        </div>
+
+        {/* Net worth chart */}
+        {players.some(p=>toArr(p.history).length>=2) && (
+          <Card style={{marginBottom:20,padding:'16px 20px'}}>
+            <GoldTitle size="sm" style={{marginBottom:14}}>Evolución del Patrimonio</GoldTitle>
+            <NetWorthChart players={players} width={560} height={180}/>
+          </Card>
+        )}
+
+        <div style={{display:'flex',justifyContent:'center'}}>
+          {isHost ? (
+            <GoldBtn size="xl" onClick={nextMonth}>
+              {month>=12?'Ver resultados finales':'Mes '+(month+1)+' →'}
+            </GoldBtn>
+          ) : (
+            <p style={{color:'#666',fontFamily:"'Jost',sans-serif",fontSize:14}}>
+              Esperando al anfitrión...
+            </p>
+          )}
+        </div>
       </div>
-      {isHost ? (
-        <GoldBtn size="xl" onClick={nextMonth}>
-          {month>=12?'Ver resultados finales':'Mes '+(month+1)+' →'}
-        </GoldBtn>
-      ) : (
-        <p style={{color:'#666',fontFamily:"'Jost',sans-serif",fontSize:14}}>Esperando al anfitrión...</p>
-      )}
     </div>
   );
 }
@@ -594,19 +623,39 @@ function App() {
       try {
         if(game.phase==='roulette') {
           const w={}; players.forEach(p=>{ w[p.id]=true; });
-          await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'invest','game/waitingFor':w,'game/investPlans':null});
+          // Pick random market event and 3 news items for this month
+          const evtIdx = Math.floor(seededRand(game.gameSeed+game.month*17)*GD.MARKET_EVENTS.length);
+          const currentEvent = GD.MARKET_EVENTS[evtIdx];
+          // Pick 3 random news items (mix accurate/inaccurate)
+          const shuffledNews = [...GD.MARKET_NEWS].sort(()=>seededRand(game.gameSeed+game.month*31+Math.random()*999)-0.5).slice(0,3);
+          await fbPatch(fbUrl,`rooms/${roomCode}`,{
+            'game/phase':'invest','game/waitingFor':w,'game/investPlans':null,
+            'game/insuranceBuyers':null,'game/currentEvent':currentEvent,
+            'game/currentNews':shuffledNews,
+          });
         }
         else if(game.phase==='invest') {
-          // Run simulation
+          // ── Run simulation ──────────────────────────────────────────
+          // NOTE: p.cash is already (original - invested) because submitInvestment
+          // deducted it. We return principal + gain/loss: cash += amount*(1+ret)
           const plans=game.investPlans||{};
           const updatedPlayers={};
+          const simResults={};  // stored so SimulationScreen can display them
+
           players.forEach(p=>{
             const invs=toArr(plans[p.id]||[]);
+            const isInsured=(game.insuranceBuyers||{})[p.id]===true;
+            const isBankrupt=(p.cash||0)<=0&&toArr(p.loans).length>0;
             let cash=p.cash||0;
+            const invResults=[];
+            const eventMods=(game.currentEvent?.modifiers)||{};
+
             invs.forEach(inv=>{
               const it=GD.INVESTMENTS.find(i=>i.id===inv.type);
               if(!it) return;
               let ret=getMonthReturn(it,game.month,game.gameSeed);
+              // Apply event modifier
+              ret+=(eventMods[inv.type]||0);
               let mult=1;
               toArr(p.activeEffects).filter(e=>(e.monthsLeft||0)>0).forEach(ef=>{
                 if(ef.type==='investment_multiplier') mult*=ef.value;
@@ -614,30 +663,83 @@ function App() {
                 if(ef.type==='business_zero'&&inv.type==='business') ret=0;
               });
               ret*=mult;
-              cash+=Math.round((inv.amount||0)*ret);
+              // Insurance: cap losses at -10%
+              let capped=false;
+              if(isInsured&&ret<-0.10){ ret=-0.10; capped=true; }
+              const returned=Math.round((inv.amount||0)*(1+ret));
+              const gain=returned-(inv.amount||0);
+              cash+=returned;
+              invResults.push({type:inv.type,amount:inv.amount,returned,gain,ret,capped,name:it.name,color:it.color});
             });
+
             // property income
-            toArr(p.properties).forEach(pr=>{ cash+=(pr.monthlyRent||Math.round((pr.value||0)*0.025)); });
+            let propIncome=0;
+            toArr(p.properties).forEach(pr=>{ propIncome+=(pr.monthlyRent||Math.round((pr.value||0)*0.025)); });
             const boost=toArr(p.activeEffects).find(e=>e.type==='property_income_boost'&&(e.monthsLeft||0)>0);
-            if(boost) cash+=toArr(p.properties).length*(boost.value||0);
-            // drain
-            toArr(p.activeEffects).filter(e=>e.type==='monthly_drain'&&(e.monthsLeft||0)>0).forEach(e=>{ cash-=(e.value||0); });
-            // loan interest
-            const newLoans=toArr(p.loans).map(l=>({...l,remaining:(l.remaining||0)+Math.round((l.remaining||0)*(l.rate||0)/12)}));
-            newLoans.forEach(l=>{ cash-=Math.round((l.remaining||0)*(l.rate||0)/12); });
-            // tick effects
-            const newEffects=toArr(p.activeEffects).map(e=>({...e,monthsLeft:(e.monthsLeft||0)-1})).filter(e=>e.monthsLeft>0);
-            updatedPlayers[p.id]={...p,cash:Math.max(0,cash),investments:[],loans:newLoans,activeEffects:newEffects};
+            if(boost) propIncome+=toArr(p.properties).length*(boost.value||0);
+            cash+=propIncome;
+
+            // monthly drain (maldición)
+            let drain=0;
+            toArr(p.activeEffects).filter(e=>e.type==='monthly_drain'&&(e.monthsLeft||0)>0).forEach(e=>{ drain+=(e.value||0); });
+            cash-=drain;
+
+            // loan interest — calculate on ORIGINAL remaining before updating
+            let loanInterest=0;
+            const newLoans=toArr(p.loans).map(l=>{
+              const interest=Math.round((l.remaining||0)*(l.rate||0)/12);
+              loanInterest+=interest;
+              cash-=interest;
+              // Reduce remaining (partial principal reduction)
+              const principalPay=Math.max(0,Math.round((l.original||l.remaining||0)/(l.monthsLeft||12)));
+              const newRemaining=Math.max(0,(l.remaining||0)-principalPay+interest);
+              return {...l,remaining:newRemaining,monthsLeft:Math.max(0,(l.monthsLeft||0)-1)};
+            }).filter(l=>(l.remaining||0)>0&&(l.monthsLeft||0)>0);
+
+            // tick down active effects
+            const newEffects=toArr(p.activeEffects)
+              .map(e=>({...e,monthsLeft:(e.monthsLeft||0)-1}))
+              .filter(e=>e.monthsLeft>0);
+
+            const oldCash=(p.cash||0)+(invs.reduce((s,i)=>s+(i.amount||0),0));
+            const newCash=Math.max(0,cash);
+            // Bankruptcy flag: cash=0 AND has loans
+            const nowBankrupt=newCash<=0&&newLoans.length>0;
+            // Update history for net worth chart
+            const nw=newCash+toArr(p.properties).reduce((s,pr)=>s+(pr.value||0),0)-newLoans.reduce((s,l)=>s+(l.remaining||0),0);
+            const newHistory=[...toArr(p.history),{month:game.month,netWorth:nw}];
+
+            simResults[p.id]={invResults,propIncome,drain,loanInterest,
+              oldCash,newCash,netChange:newCash-oldCash,insured:isInsured};
+            updatedPlayers[p.id]={...p,cash:newCash,investments:[],
+              loans:newLoans,activeEffects:newEffects,
+              bankrupt:nowBankrupt,history:newHistory};
           });
-          // Draw 5 artifacts
+
+          // Draw 5 items for auction: mix 3 artifacts + 2 properties
           const deck=toArr(game.artifactDeck);
+          const propDeck=toArr(game.propertyDeck||[]);
           const idx=game.artifactDeckIdx||0;
-          const arts=deck.slice(idx,idx+5);
-          const nextIdx=(idx+5)%deck.length;
+          const pidx=game.propertyDeckIdx||0;
+          const arts=deck.slice(idx,idx+3);
+          const props=propDeck.slice(pidx,pidx+2);
+          // Shuffle the 5 items together
+          const auctionItems=[...arts,...props].sort(()=>Math.random()-0.5);
+          const nextIdx=(idx+3)%deck.length;
+          const nextPidx=(pidx+2)%Math.max(propDeck.length,1);
           const w={}; players.forEach(p=>{ w[p.id]=true; });
-          const updates={'game/phase':'simulate','game/simulationPlayers':updatedPlayers,
-            'game/auctionArtifacts':arts,'game/artifactDeckIdx':nextIdx,
-            'game/currentArtifactIdx':0,'game/auctionPhase':'bidding','game/auctionBids':null,'game/auctionWinner':null};
+          const updates={
+            'game/phase':'simulate',
+            'game/simResults':simResults,
+            'game/auctionArtifacts':auctionItems,
+            'game/artifactDeckIdx':nextIdx,
+            'game/propertyDeckIdx':nextPidx,
+            'game/currentArtifactIdx':0,
+            'game/auctionPhase':'bidding',
+            'game/auctionBids':null,
+            'game/auctionWinner':null,
+            'game/waitingFor':w,
+          };
           players.forEach(p=>{ updates[`players/${p.id}`]=updatedPlayers[p.id]; });
           await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
         }
@@ -661,14 +763,26 @@ function App() {
             let winId=null,winAmt=-1;
             Object.entries(artBids).forEach(([pid,amt])=>{ if(amt>winAmt){winAmt=amt;winId=pid;} });
             const winner={playerId:winId,amount:winAmt};
-            // Apply artifact
+            // Apply artifact or property to winner
             let updPlayers=[...players];
             if(winId&&winAmt>0) {
-              const immune=(room.players[winId]?.activeEffects||[]).some(e=>e.type==='curse_immunity'&&(e.monthsLeft||0)>0);
-              if(!(art.type==='curse'&&immune)) {
-                updPlayers=applyArtifactEffect(art,winId,updPlayers);
+              if(art.type==='property') {
+                // Add property to winner's portfolio
+                updPlayers=updPlayers.map(p=>p.id===winId?{
+                  ...p,
+                  cash:Math.max(0,(p.cash||0)-winAmt),
+                  properties:[...toArr(p.properties),{
+                    id:art.id,name:art.name,value:art.value,
+                    monthlyRent:art.monthlyRent,
+                  }],
+                }:p);
+              } else {
+                const immune=(room.players[winId]?.activeEffects||[]).some(e=>e.type==='curse_immunity'&&(e.monthsLeft||0)>0);
+                if(!(art.type==='curse'&&immune)) {
+                  updPlayers=applyArtifactEffect(art,winId,updPlayers);
+                }
+                updPlayers=updPlayers.map(p=>p.id===winId?{...p,cash:Math.max(0,(p.cash||0)-winAmt)}:p);
               }
-              updPlayers=updPlayers.map(p=>p.id===winId?{...p,cash:Math.max(0,(p.cash||0)-winAmt)}:p);
             }
             const playerUpdates={};
             updPlayers.forEach(p=>{ playerUpdates[`players/${p.id}`]=p; });
@@ -684,13 +798,21 @@ function App() {
   },[room,isHost,game,players,fbUrl,roomCode]);
 
   // ── ACTIONS ──────────────────────────────
-  const submitInvestment = async (investments, newCash) => {
+  const submitInvestment = async (investments, newCash, insured=false) => {
     const updates={};
     updates[`players/${myId}/cash`]=newCash;
     updates[`players/${myId}/investments`]=investments;
     updates[`game/investPlans/${myId}`]=investments;
+    if (insured) updates[`game/insuranceBuyers/${myId}`]=true;
     updates[`game/waitingFor/${myId}`]=null;
     await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
+  };
+
+  const sendChat = async (text) => {
+    const msgId = `m${Date.now()}`;
+    await fbSet(fbUrl, `rooms/${roomCode}/chat/${msgId}`, {
+      pid:myId, name:(me?.name||'?'), text, ts:Date.now()
+    });
   };
 
   const submitBid = async (artId, amount) => {
@@ -734,6 +856,10 @@ function App() {
     setRoom(''); setMyId(''); setRS(null); setStatus('idle');
   };
 
+  const chatMessages = useMemo(()=>
+    Object.values(room?.chat||{}).sort((a,b)=>(a.ts||0)-(b.ts||0)).slice(-30)
+  ,[room]);
+
   // ── RENDER ────────────────────────────────
   if (!fbUrl) return <ConfigScreen onSave={saveFb}/>;
   if (!roomCode||!myId) return <LobbyScreen fbUrl={fbUrl} onJoin={(code,pid,initialRoom)=>{ setRoom(code); setMyId(pid); if(initialRoom){setRS(initialRoom);setStatus('ok');} }}/>;
@@ -752,30 +878,73 @@ function App() {
     </div>;
   }
 
-  const phase = game?.phase||'lobby';
-  const waiting = game?.waitingFor||{};
-  const myDone = waiting[myId]!==true;
+  const phase      = game?.phase||'lobby';
+  const waiting    = game?.waitingFor||{};
+  const myDone     = waiting[myId]!==true;
   const waitingArr = players.filter(p=>waiting[p.id]===true).map(p=>p.id);
-  const arts = toArr(game?.auctionArtifacts);
-  const artIdx = game?.currentArtifactIdx||0;
+  const arts       = toArr(game?.auctionArtifacts);
+  const artIdx     = game?.currentArtifactIdx||0;
+
+  // Unified top bar wrapper
+  const GameWrapper = ({children}) => (
+    <div style={{minHeight:'100vh',background:BG,boxSizing:'border-box',
+      display:'flex',flexDirection:'column'}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+        background:BG_CARD2,borderBottom:`1px solid ${BORDER}`,
+        padding:'5px 16px',flexShrink:0,gap:12,flexWrap:'wrap'}}>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <span style={{color:GOLD_DIM,fontFamily:"'Jost',sans-serif",
+            fontSize:11,letterSpacing:'0.1em',whiteSpace:'nowrap'}}>
+            MES {game?.month||1}/12
+          </span>
+          <div style={{width:80,height:3,background:'#1a1000',borderRadius:2}}>
+            <div style={{width:`${Math.round(((game?.month||1)/12)*100)}%`,
+              height:'100%',background:`linear-gradient(90deg,${GOLD_DIM},${GOLD})`,
+              borderRadius:2}}/>
+          </div>
+        </div>
+        <LeaderboardBar players={players} myId={myId}/>
+        <SoundToggle/>
+      </div>
+      <div style={{flex:1}}>{children}</div>
+    </div>
+  );
 
   if(phase==='lobby') return <WaitingRoom room={room} myId={myId} fbUrl={fbUrl} roomCode={roomCode} onLeave={leave}/>;
   if(phase==='roulette') return <RoulettePhaseScreen room={room} myId={myId} fbUrl={fbUrl} roomCode={roomCode}/>;
 
-  if(phase==='invest') return <InvestmentPhase player={me} month={game.month||1} gameSeed={game.gameSeed||0}
-    onConfirm={submitInvestment} hasOracle={hasOracle} oracleData={oracleData}
-    isDone={myDone} waitingPlayers={waitingArr} allPlayers={players}/>;
+  if(phase==='invest') return (
+    <GameWrapper>
+      <InvestmentPhase player={me} month={game.month||1} gameSeed={game.gameSeed||0}
+        onConfirm={submitInvestment} hasOracle={hasOracle} oracleData={oracleData}
+        isDone={myDone} waitingPlayers={waitingArr} allPlayers={players}
+        event={game.currentEvent} news={toArr(game.currentNews)}/>
+    </GameWrapper>
+  );
 
-  if(phase==='simulate') return <SimulationScreen players={players} month={game.month||1}
-    gameSeed={game.gameSeed||0} onContinue={simulateContinue} isHost={isHost}/>;
+  if(phase==='simulate') return (
+    <GameWrapper>
+      <SimulationScreen players={players} month={game.month||1}
+        simResults={game.simResults||{}} onContinue={simulateContinue} isHost={isHost}/>
+    </GameWrapper>
+  );
 
-  if(phase==='auction') return <AuctionPhase me={me} players={players} artifacts={arts}
-    artIdx={artIdx} bids={game.auctionBids||{}} onBid={submitBid}
-    phase={game.auctionPhase||'bidding'} winner={game.auctionWinner}
-    onNextArtifact={nextArtifact} isHost={isHost} month={game.month||1}/>;
+  if(phase==='auction') return (
+    <GameWrapper>
+      <AuctionPhase me={me} players={players} artifacts={arts}
+        artIdx={artIdx} bids={game.auctionBids||{}} onBid={submitBid}
+        phase={game.auctionPhase||'bidding'} winner={game.auctionWinner}
+        onNextArtifact={nextArtifact} isHost={isHost} month={game.month||1}
+        chatMessages={chatMessages} onChatSend={sendChat}/>
+    </GameWrapper>
+  );
 
-  if(phase==='loans') return <LoansPhase me={me} onComplete={submitLoan}
-    isDone={myDone} waitingPlayers={waitingArr} allPlayers={players}/>;
+  if(phase==='loans') return (
+    <GameWrapper>
+      <LoansPhase me={me} onComplete={submitLoan}
+        isDone={myDone} waitingPlayers={waitingArr} allPlayers={players}/>
+    </GameWrapper>
+  );
 
   if(phase==='standings') return <StandingsScreen room={room} myId={myId}
     fbUrl={fbUrl} roomCode={roomCode} isHost={isHost}/>;
