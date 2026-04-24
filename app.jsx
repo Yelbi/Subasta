@@ -885,15 +885,255 @@ function App() {
   const arts       = toArr(game?.auctionArtifacts);
   const artIdx     = game?.currentArtifactIdx||0;
 
-  // Unified top bar wrapper
-  const GameWrapper = ({children}) => {
-    const [menuOpen, setMenuOpen] = React.useState(false);
-    const [tab, setTab] = React.useState('menu'); // menu | portfolio | rules
+// ── GAME WRAPPER (must be outside App to preserve state between polls) ──
+function GameWrapper({ game, players, myId, me, roomCode, leave, children }) {
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const [tab, setTab] = React.useState('menu');
 
-    const myProps = toArr(me?.properties);
-    const myLoans = Object.values(me?.loans||{});
-    const myEffects = toArr(me?.activeEffects).filter(e=>(e.monthsLeft||0)>0);
-    const myArts = toArr(me?.artifacts);
+  const myProps   = toArr(me?.properties);
+  const myLoans   = Object.values(me?.loans||{});
+  const myEffects = toArr(me?.activeEffects).filter(e=>(e.monthsLeft||0)>0);
+  const myArts    = toArr(me?.artifacts);
+
+  return (
+    <div style={{minHeight:'100vh',background:BG,boxSizing:'border-box',
+      display:'flex',flexDirection:'column',position:'relative'}}>
+      {/* Top bar */}
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',
+        background:BG_CARD2,borderBottom:`1px solid ${BORDER}`,
+        padding:'5px 14px',flexShrink:0,gap:10}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+          <span style={{color:GOLD_DIM,fontFamily:"'Jost',sans-serif",
+            fontSize:11,letterSpacing:'0.1em'}}>MES {game?.month||1}/12</span>
+          <div style={{width:72,height:3,background:'#1a1000',borderRadius:2}}>
+            <div style={{width:`${Math.round(((game?.month||1)/12)*100)}%`,
+              height:'100%',background:`linear-gradient(90deg,${GOLD_DIM},${GOLD})`,
+              borderRadius:2}}/>
+          </div>
+        </div>
+        <div style={{flex:1,overflow:'hidden'}}>
+          <LeaderboardBar players={players} myId={myId}/>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
+          <SoundToggle/>
+          <button onClick={()=>setMenuOpen(v=>!v)}
+            style={{background:menuOpen?'rgba(218,165,32,0.12)':'none',
+              border:`1px solid ${menuOpen?GOLD_DIM:BORDER}`,
+              borderRadius:4,padding:'5px 10px',cursor:'pointer',
+              color:menuOpen?GOLD:GOLD_DIM,display:'flex',alignItems:'center',gap:5,
+              fontFamily:"'Jost',sans-serif",fontSize:11,transition:'all 0.15s'}}>
+            <Ico name="layers" size={13}/> Menú
+          </button>
+        </div>
+      </div>
+
+      {/* Slide-out menu */}
+      {menuOpen && (
+        <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',
+          justifyContent:'flex-end'}} onClick={()=>setMenuOpen(false)}>
+          <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.65)'}}/>
+          <div onClick={e=>e.stopPropagation()}
+            style={{position:'relative',width:320,height:'100%',
+              background:BG_CARD2,borderLeft:`1px solid ${BORDER}`,
+              display:'flex',flexDirection:'column',
+              boxShadow:'-8px 0 32px rgba(0,0,0,0.7)',
+              animation:'slideInRight 0.2s ease'}}>
+
+            {/* Panel header */}
+            <div style={{display:'flex',justifyContent:'space-between',
+              alignItems:'center',padding:'14px 16px',
+              borderBottom:`1px solid ${BORDER}`}}>
+              <div style={{display:'flex',alignItems:'center',gap:10}}>
+                <Avatar name={me?.name||'?'} colorIndex={me?.colorIndex||0} size={32}/>
+                <div>
+                  <GoldTitle size="sm">{me?.name}</GoldTitle>
+                  <div style={{marginTop:2}}>
+                    <MoneyDisplay amount={calcNetWorthArr(me||{})} size="sm"/>
+                  </div>
+                </div>
+              </div>
+              <button onClick={()=>setMenuOpen(false)}
+                style={{background:'none',border:'none',cursor:'pointer',padding:'4px'}}>
+                <Ico name="x" size={18} color="#666"/>
+              </button>
+            </div>
+
+            {/* Tabs */}
+            <div style={{display:'flex',borderBottom:`1px solid ${BORDER}`}}>
+              {[{id:'menu',label:'Menú'},{id:'portfolio',label:'Cartera'},{id:'rules',label:'Reglas'}].map(t=>(
+                <button key={t.id} onClick={()=>setTab(t.id)}
+                  style={{flex:1,background:'none',border:'none',
+                    borderBottom:`2px solid ${tab===t.id?GOLD:'transparent'}`,
+                    padding:'10px 4px',cursor:'pointer',
+                    color:tab===t.id?GOLD:'#666',
+                    fontFamily:"'Jost',sans-serif",fontSize:12,transition:'all 0.15s'}}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab content */}
+            <div style={{flex:1,overflowY:'auto',padding:'14px 16px'}}>
+              {tab==='menu' && (
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  <div style={{background:'#0e0800',border:`1px solid ${BORDER}`,
+                    borderRadius:6,padding:'10px 14px',marginBottom:4}}>
+                    <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
+                      fontSize:10,letterSpacing:'0.1em',marginBottom:4}}>CÓDIGO DE SALA</div>
+                    <div style={{fontFamily:"'Playfair Display',serif",
+                      fontSize:22,color:GOLD,letterSpacing:'0.2em'}}>{roomCode}</div>
+                  </div>
+                  {game?.currentEvent && (
+                    <div style={{marginBottom:4}}>
+                      <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
+                        fontSize:10,letterSpacing:'0.1em',marginBottom:6}}>EVENTO ACTUAL</div>
+                      <EventBanner event={game.currentEvent}/>
+                    </div>
+                  )}
+                  <div style={{background:'#0e0800',border:`1px solid ${BORDER}`,
+                    borderRadius:6,padding:'10px 14px'}}>
+                    <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
+                      fontSize:10,letterSpacing:'0.1em',marginBottom:8}}>FASE ACTUAL</div>
+                    {[{id:'roulette',label:'Ruleta'},{id:'invest',label:'Inversiones'},
+                      {id:'simulate',label:'Resultados'},{id:'auction',label:'Subasta'},
+                      {id:'loans',label:'Préstamos'},{id:'standings',label:'Clasificación'}].map(p=>(
+                      <div key={p.id} style={{display:'flex',alignItems:'center',
+                        gap:8,marginBottom:4}}>
+                        <div style={{width:7,height:7,borderRadius:'50%',flexShrink:0,
+                          background:game?.phase===p.id?GOLD:BORDER}}/>
+                        <span style={{color:game?.phase===p.id?GOLD:'#555',
+                          fontFamily:"'Jost',sans-serif",fontSize:12}}>{p.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <GoldDivider/>
+                  <GoldBtn variant="ghost" size="md" onClick={()=>setMenuOpen(false)}
+                    style={{width:'100%',display:'flex',alignItems:'center',gap:8}}>
+                    <Ico name="x" size={14}/> Cerrar menú
+                  </GoldBtn>
+                  <GoldBtn variant="danger" size="md"
+                    onClick={()=>{if(window.confirm('¿Abandonar la partida?')) leave();}}
+                    style={{width:'100%',display:'flex',alignItems:'center',gap:8}}>
+                    <Ico name="log-out" size={14} color="#fff"/> Abandonar partida
+                  </GoldBtn>
+                </div>
+              )}
+
+              {tab==='portfolio' && (
+                <div style={{display:'flex',flexDirection:'column',gap:12}}>
+                  <div style={{background:'#0e0800',border:`1px solid ${BORDER}`,
+                    borderRadius:6,padding:'10px 14px'}}>
+                    <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
+                      fontSize:10,letterSpacing:'0.1em',marginBottom:4}}>EFECTIVO</div>
+                    <MoneyDisplay amount={me?.cash||0} size="lg"/>
+                  </div>
+                  <div>
+                    <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
+                      fontSize:10,letterSpacing:'0.1em',marginBottom:8}}>
+                      PROPIEDADES ({myProps.length})
+                    </div>
+                    {myProps.length===0
+                      ? <p style={{color:'#555',fontFamily:"'Jost',sans-serif",fontSize:12}}>Sin propiedades</p>
+                      : myProps.map((p,i)=>(
+                        <div key={i} style={{background:'#0e0800',
+                          border:`1px solid oklch(40% 0.12 145deg)`,
+                          borderRadius:5,padding:'8px 11px',marginBottom:6}}>
+                          <div style={{color:GREEN_CLR,fontFamily:"'Playfair Display',serif",
+                            fontSize:12,fontWeight:600,marginBottom:3}}>{p.name}</div>
+                          <div style={{display:'flex',justifyContent:'space-between'}}>
+                            <span style={{color:'#888',fontFamily:"'Jost',sans-serif",fontSize:11}}>
+                              {fmtFull(p.value)}
+                            </span>
+                            <span style={{color:GREEN_CLR,fontFamily:"'Jost',sans-serif",fontSize:11}}>
+                              +{fmtFull(p.monthlyRent)}/mes
+                            </span>
+                          </div>
+                        </div>
+                      ))
+                    }
+                  </div>
+                  <div>
+                    <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
+                      fontSize:10,letterSpacing:'0.1em',marginBottom:8}}>
+                      DEUDAS ({myLoans.length})
+                    </div>
+                    {myLoans.length===0
+                      ? <p style={{color:'#555',fontFamily:"'Jost',sans-serif",fontSize:12}}>Sin deudas</p>
+                      : myLoans.map((l,i)=>(
+                        <div key={i} style={{background:'#0e0800',
+                          border:`1px solid ${RED}44`,borderRadius:5,
+                          padding:'8px 11px',marginBottom:6}}>
+                          <div style={{color:'#cc8888',fontFamily:"'Jost',sans-serif",
+                            fontSize:11,marginBottom:3}}>{l.label||'Préstamo'}</div>
+                          <div style={{display:'flex',justifyContent:'space-between'}}>
+                            <MoneyDisplay amount={-(l.remaining||0)} size="sm"/>
+                            <span style={{color:'#888',fontFamily:"'Jost',sans-serif",fontSize:11}}>
+                              {(l.rate*100).toFixed(0)}% · {l.monthsLeft}m restantes
+                            </span>
+                          </div>
+                        </div>
+                      ))
+                    }
+                  </div>
+                  {myEffects.length>0 && (
+                    <div>
+                      <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
+                        fontSize:10,letterSpacing:'0.1em',marginBottom:8}}>EFECTOS ACTIVOS</div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                        {myEffects.map((ef,i)=>(
+                          <EffectTag key={i}
+                            label={`${ef.label||ef.type} (${ef.monthsLeft}m)`}
+                            type={ef.type.includes('multiplier')||ef.type.includes('immunity')||ef.type.includes('boost')?'good':'bad'}/>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {myArts.length>0 && (
+                    <div>
+                      <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
+                        fontSize:10,letterSpacing:'0.1em',marginBottom:8}}>ARTEFACTOS</div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
+                        {myArts.map((a,i)=>(
+                          <EffectTag key={i} label={a.name}
+                            type={a.type==='blessing'?'good':a.type==='property'?'neutral':'bad'}/>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {tab==='rules' && (
+                <div style={{color:'#999',fontFamily:"'Jost',sans-serif",
+                  fontSize:12,lineHeight:1.9,display:'flex',flexDirection:'column',gap:12}}>
+                  {[
+                    {t:'Objetivo',b:'Acumular el mayor patrimonio neto al final de los 12 meses. Patrimonio = efectivo + propiedades − deudas.'},
+                    {t:'Ruleta inicial',b:'Cada jugador gira la ruleta para obtener su capital inicial (entre $50K y $1M).'},
+                    {t:'Inversiones',b:'Decide cómo invertir tu efectivo en 6 sectores. El seguro (3%) limita pérdidas al 10%.'},
+                    {t:'Eventos del mes',b:'Cada mes un evento modifica los retornos. Las noticias dan pistas — algunas son falsas.'},
+                    {t:'Subasta',b:'Se subastan 5 objetos (artefactos + propiedades). Pujas secretas. Solo el ganador descubre qué ganó.'},
+                    {t:'Artefactos',b:'Bendiciones dan ventajas. Maldiciones causan daño. La Campana de Oro protege de maldiciones.'},
+                    {t:'Propiedades',b:'Dan renta mensual automática. Se obtienen en subasta o por artefactos.'},
+                    {t:'Préstamos',b:'Don Aurelio ofrece préstamos tras la subasta. Los intereses se cobran mensualmente.'},
+                    {t:'Quiebra',b:'Si tu efectivo llega a $0 con deudas, no puedes invertir. Don Aurelio ofrece rescate al 30%.'},
+                  ].map(({t,b})=>(
+                    <div key={t}>
+                      <div style={{color:GOLD_DIM,fontFamily:"'Playfair Display',serif",
+                        fontSize:13,fontWeight:600,marginBottom:3}}>{t}</div>
+                      <div>{b}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{flex:1}}>{children}</div>
+    </div>
+  );
+}
 
     return (
       <div style={{minHeight:'100vh',background:BG,boxSizing:'border-box',
@@ -1180,7 +1420,7 @@ function App() {
   if(phase==='roulette') return <RoulettePhaseScreen room={room} myId={myId} fbUrl={fbUrl} roomCode={roomCode}/>;
 
   if(phase==='invest') return (
-    <GameWrapper>
+    <GameWrapper game={game} players={players} myId={myId} me={me} roomCode={roomCode} leave={leave}>
       <InvestmentPhase player={me} month={game.month||1} gameSeed={game.gameSeed||0}
         onConfirm={submitInvestment} hasOracle={hasOracle} oracleData={oracleData}
         isDone={myDone} waitingPlayers={waitingArr} allPlayers={players}
@@ -1189,14 +1429,14 @@ function App() {
   );
 
   if(phase==='simulate') return (
-    <GameWrapper>
+    <GameWrapper game={game} players={players} myId={myId} me={me} roomCode={roomCode} leave={leave}>
       <SimulationScreen players={players} month={game.month||1}
         simResults={game.simResults||{}} onContinue={simulateContinue} isHost={isHost}/>
     </GameWrapper>
   );
 
   if(phase==='auction') return (
-    <GameWrapper>
+    <GameWrapper game={game} players={players} myId={myId} me={me} roomCode={roomCode} leave={leave}>
       <AuctionPhase me={me} players={players} artifacts={arts}
         artIdx={artIdx} bids={game.auctionBids||{}} onBid={submitBid}
         phase={game.auctionPhase||'bidding'} winner={game.auctionWinner}
@@ -1206,7 +1446,7 @@ function App() {
   );
 
   if(phase==='loans') return (
-    <GameWrapper>
+    <GameWrapper game={game} players={players} myId={myId} me={me} roomCode={roomCode} leave={leave}>
       <LoansPhase me={me} onComplete={submitLoan}
         isDone={myDone} waitingPlayers={waitingArr} allPlayers={players}/>
     </GameWrapper>
