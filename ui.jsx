@@ -306,20 +306,23 @@ function EffectTag({ label, type='good' }) {
   );
 }
 
-// ── NET WORTH UTIL ────────────────────────────
+// ── NET WORTH UTILS ──────────────────────────
+// Safe array: handles Firebase objects (numeric-keyed) AND real arrays
+function safeArr(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v;
+  return Object.values(v);
+}
+
 function calcNetWorth(p) {
-  const inv  = Object.values(p.investments||{}).reduce((s,i)=>s+(i.amount||0),0);
-  const prop = Object.values(p.properties||{}).reduce((s,pr)=>s+(pr.value||0),0);
-  const debt = Object.values(p.loans||{}).reduce((s,l)=>s+(l.remaining||0),0);
+  const inv  = safeArr(p.investments).reduce((s,i)=>s+(i.amount||0),0);
+  const prop = safeArr(p.properties).reduce((s,pr)=>s+(pr.value||0),0);
+  const debt = safeArr(p.loans).reduce((s,l)=>s+(l.remaining||0),0);
   return (p.cash||0)+inv+prop-debt;
 }
 
-function calcNetWorthArr(p) {
-  const inv  = (p.investments||[]).reduce((s,i)=>s+(i.amount||0),0);
-  const prop = (p.properties||[]).reduce((s,pr)=>s+(pr.value||0),0);
-  const debt = (p.loans||[]).reduce((s,l)=>s+(l.remaining||0),0);
-  return (p.cash||0)+inv+prop-debt;
-}
+// Alias — both functions are now identical and robust
+function calcNetWorthArr(p) { return calcNetWorth(p); }
 
 // ── SOUND BUTTON ─────────────────────────────
 function SoundToggle() {
@@ -491,7 +494,7 @@ function EventBanner({ event }) {
 
 Object.assign(window, {
   GOLD,GOLD_LIGHT,GOLD_DIM,RED,GREEN_CLR,BG,BG_CARD,BG_CARD2,BORDER,BORDER2,
-  fmt,fmtFull,seededRand,calcNetWorth,calcNetWorthArr,
+  fmt,fmtFull,seededRand,safeArr,calcNetWorth,calcNetWorthArr,
   Ico,Avatar,GoldBtn,Card,GoldTitle,MoneyDisplay,GoldDivider,
   Sparkline,RouletteWheel,Risk,WaitingFor,EffectTag,
   SoundToggle,LeaderboardBar,NetWorthChart,EventBanner,

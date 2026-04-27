@@ -32,7 +32,7 @@ function PropertyMysteryCard({ index, totalBidders, bidsIn }) {
         border:`1px solid oklch(30% 0.12 145deg)`,borderRadius:4,
         padding:'4px 10px',color:'oklch(55% 0.15 145deg)',
         fontFamily:"'Jost',sans-serif",fontSize:11,width:'100%',textAlign:'center'}}>
-        {bidsIn}/{totalBidders} pujas recibidas
+        {bidsIn} / {totalBidders} han pasado
       </div>
     </div>
   );
@@ -66,7 +66,7 @@ function MysteryCard({ index, totalBidders, bidsIn }) {
         border:`1px solid ${BORDER}`,borderRadius:4,padding:'4px 10px',
         color:GOLD_DIM,fontFamily:"'Jost',sans-serif",fontSize:11,
         width:'100%',textAlign:'center'}}>
-        {bidsIn}/{totalBidders} pujas recibidas
+        {bidsIn} / {totalBidders} han pasado
       </div>
     </div>
   );
@@ -285,52 +285,60 @@ function ChatPanel({ messages, myId, myName, onSend }) {
   );
 }
 
-// ── AUCTION PHASE (Multiplayer v2) ───────────────
-function AuctionPhase({ me, players, artifacts, artIdx, bids, onBid,
-  phase, winner, onNextArtifact, isHost, month, chatMessages, onChatSend }) {
+// ── AUCTION PHASE — Subasta Ascendente ──────────────
+function AuctionPhase({ me, players, artifacts, artIdx, ascBid,
+  onPlaceBid, onPassBid, phase, winner, onNextArtifact, isHost, month,
+  chatMessages, onChatSend }) {
   const [bidInput, setBidInput] = useState('');
   const art = artifacts[artIdx];
   if (!art) return null;
 
-  const isProperty = art.type==='property';
-  const myBid = bids?.[art.id]?.[me.id];
-  const hasBid = myBid !== undefined && myBid !== null;
-  const bidsDone = players.filter(p=>bids?.[art.id]?.[p.id]!==undefined&&bids?.[art.id]?.[p.id]!==null);
+  const isProperty = art.type === 'property';
+  const current    = ascBid?.current    || 0;
+  const leaderId   = ascBid?.leaderId   || null;
+  const passed     = ascBid?.passed     || {};
+  const minRaise   = Math.max(5000, Math.round(current * 0.05));
+  const iAmLeader  = leaderId === me.id;
+  const iHavePassed = !!passed[me.id];
+  const passedCount = Object.keys(passed).length;
+  const stillIn    = players.filter(p => !passed[p.id]);
+  const leaderPlayer = leaderId ? players.find(p => p.id === leaderId) : null;
+
+  const canBid = !iAmLeader && !iHavePassed;
+  const minBid = current > 0 ? current + minRaise : 1;
 
   const submitBid = () => {
-    const amount = parseInt(bidInput.replace(/\D/g,''))||0;
-    const safe = Math.min(amount, me.cash||0);
-    onBid(art.id, safe);
-    window.SFX?.coin?.();
+    const amount = parseInt(bidInput.replace(/\D/g,'')) || 0;
+    if (amount < minBid) return;
+    const safe = Math.min(amount, me.cash || 0);
+    onPlaceBid(safe);
     setBidInput('');
   };
 
-  // ── REVEAL ───────────────────────────────────
-  if (phase==='reveal') {
-    const winPlayer = winner?.playerId ? players.find(p=>p.id===winner.playerId) : null;
-    const artBids = bids?.[art.id]||{};
+  // ── REVEAL ────────────────────────────────────────
+  if (phase === 'reveal') {
+    const winPlayer = winner?.playerId ? players.find(p => p.id === winner.playerId) : null;
     return (
       <div style={{padding:'20px',display:'flex',flexDirection:'column',
         alignItems:'center',gap:20,maxWidth:860,margin:'0 auto'}}>
         <GoldTitle size="lg" style={{textAlign:'center'}}>
-          {isProperty?'Propiedad Revelada':'Artefacto Revelado'}
+          {isProperty ? 'Propiedad Revelada' : 'Artefacto Revelado'}
         </GoldTitle>
         <GoldDivider/>
         <div style={{display:'flex',flexWrap:'wrap',gap:24,
           justifyContent:'center',alignItems:'flex-start',width:'100%'}}>
-          <FlipRevealCard item={art} isWinner={winner?.playerId===me.id}/>
+          <FlipRevealCard item={art} isWinner={winner?.playerId === me.id}/>
           <div style={{display:'flex',flexDirection:'column',gap:10,
             flex:1,minWidth:260,maxWidth:340}}>
             <Card>
-              <GoldTitle size="sm" style={{marginBottom:10}}>Pujas</GoldTitle>
-              {players.map(p=>{
-                const bid=(artBids[p.id]!=null)?artBids[p.id]:null;
-                const isWin=winner?.playerId===p.id&&(winner?.amount||0)>0;
+              <GoldTitle size="sm" style={{marginBottom:10}}>Resultado</GoldTitle>
+              {players.map(p => {
+                const isWin = winner?.playerId === p.id && (winner?.amount || 0) > 0;
                 return (
                   <div key={p.id} style={{display:'flex',justifyContent:'space-between',
                     alignItems:'center',padding:'6px 10px',borderRadius:4,marginBottom:4,
-                    background:isWin?'rgba(218,165,32,0.1)':'#0e0800',
-                    border:`1px solid ${isWin?GOLD:BORDER}`}}>
+                    background:isWin ? 'rgba(218,165,32,0.1)' : '#0e0800',
+                    border:`1px solid ${isWin ? GOLD : BORDER}`}}>
                     <div style={{display:'flex',alignItems:'center',gap:7}}>
                       <Avatar name={p.name||'?'} colorIndex={p.colorIndex||0} size={26}/>
                       <span style={{color:GOLD_LIGHT,fontFamily:"'Jost',sans-serif",fontSize:13}}>
@@ -338,8 +346,11 @@ function AuctionPhase({ me, players, artifacts, artIdx, bids, onBid,
                       </span>
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:7}}>
-                      <MoneyDisplay amount={bid||0} size="sm"/>
-                      {isWin && <Ico name="crown" size={13} color={GOLD}/>}
+                      {isWin
+                        ? <><MoneyDisplay amount={winner.amount} size="sm"/>
+                            <Ico name="crown" size={13} color={GOLD}/></>
+                        : <span style={{color:'#555',fontFamily:"'Jost',sans-serif",fontSize:12}}>Pasó</span>
+                      }
                     </div>
                   </div>
                 );
@@ -353,8 +364,7 @@ function AuctionPhase({ me, players, artifacts, artIdx, bids, onBid,
                 <Avatar name={winPlayer.name||'?'} colorIndex={winPlayer.colorIndex||0}
                   size={44} style={{margin:'0 auto 8px'}}/>
                 <GoldTitle size="sm" style={{marginBottom:2}}>{winPlayer.name}</GoldTitle>
-                <p style={{color:'#888',fontFamily:"'Jost',sans-serif",
-                  fontSize:12,margin:'2px 0 8px'}}>
+                <p style={{color:'#888',fontFamily:"'Jost',sans-serif",fontSize:12,margin:'2px 0 8px'}}>
                   ganó con {fmtFull(winner.amount)}
                 </p>
                 {isProperty ? (
@@ -372,23 +382,22 @@ function AuctionPhase({ me, players, artifacts, artIdx, bids, onBid,
               <div style={{background:'rgba(80,80,80,0.08)',border:`1px solid ${BORDER}`,
                 borderRadius:8,padding:'14px',textAlign:'center'}}>
                 <p style={{color:'#666',fontFamily:"'Jost',sans-serif",fontSize:13,margin:0}}>
-                  Nadie pujó. Se desvanece en la oscuridad.
+                  Nadie pujó. El objeto se desvanece en la oscuridad.
                 </p>
               </div>
             )}
 
             {isHost ? (
               <GoldBtn size="lg" onClick={onNextArtifact} style={{width:'100%'}}>
-                {artIdx<artifacts.length-1
-                  ?`Siguiente (${artIdx+2}/${artifacts.length})`
-                  :'Terminar subasta'}
+                {artIdx < artifacts.length - 1
+                  ? `Siguiente (${artIdx+2}/${artifacts.length})`
+                  : 'Terminar subasta'}
                 <span style={{marginLeft:8,display:'inline-flex',verticalAlign:'middle'}}>
                   <Ico name="arrow-right" size={14} color="#080503"/>
                 </span>
               </GoldBtn>
             ) : (
-              <p style={{color:'#666',fontFamily:"'Jost',sans-serif",
-                fontSize:13,textAlign:'center',margin:0}}>
+              <p style={{color:'#666',fontFamily:"'Jost',sans-serif",fontSize:13,textAlign:'center',margin:0}}>
                 Esperando al anfitrión...
               </p>
             )}
@@ -399,97 +408,206 @@ function AuctionPhase({ me, players, artifacts, artIdx, bids, onBid,
     );
   }
 
-  // ── BIDDING ──────────────────────────────────
+  // ── BIDDING ASCENDENTE ────────────────────────────
   return (
     <div style={{padding:'20px',display:'flex',flexDirection:'column',
-      alignItems:'center',gap:16,maxWidth:720,margin:'0 auto'}}>
+      alignItems:'center',gap:16,maxWidth:800,margin:'0 auto'}}>
+
+      {/* Header */}
       <div style={{textAlign:'center'}}>
         <div style={{color:GOLD_DIM,fontFamily:"'Jost',sans-serif",
           fontSize:11,letterSpacing:'0.2em',marginBottom:4}}>
-          {isProperty?'PROPIEDAD':'ARTEFACTO'} {artIdx+1} / {artifacts.length}
+          {isProperty ? 'PROPIEDAD' : 'ARTEFACTO'} {artIdx+1} / {artifacts.length}
         </div>
-        <GoldTitle size="md">
-          {isProperty?'Subasta de Propiedad':'Subasta de Artefacto'}
-        </GoldTitle>
+        <GoldTitle size="md">Subasta Abierta</GoldTitle>
+        <p style={{color:'#666',fontFamily:"'Jost',sans-serif",fontSize:12,margin:'4px 0 0'}}>
+          Puja o pasa — el último en quedar gana el objeto
+        </p>
       </div>
 
       <div style={{display:'flex',flexWrap:'wrap',gap:20,
         justifyContent:'center',alignItems:'flex-start',width:'100%'}}>
-        {isProperty
-          ? <PropertyMysteryCard index={artIdx} totalBidders={players.length} bidsIn={bidsDone.length}/>
-          : <MysteryCard index={artIdx} totalBidders={players.length} bidsIn={bidsDone.length}/>
-        }
 
-        <Card style={{flex:1,minWidth:260,maxWidth:310}}>
+        {/* Left: mystery card + current bid */}
+        <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:14}}>
+          {isProperty
+            ? <PropertyMysteryCard index={artIdx} totalBidders={players.length} bidsIn={passedCount}/>
+            : <MysteryCard index={artIdx} totalBidders={players.length} bidsIn={passedCount}/>
+          }
+          {/* Current bid display */}
+          <div style={{background:'rgba(218,165,32,0.06)',border:`1px solid ${GOLD}33`,
+            borderRadius:10,padding:'12px 28px',textAlign:'center',width:'100%'}}>
+            <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
+              fontSize:10,letterSpacing:'0.12em',marginBottom:4}}>PUJA ACTUAL</div>
+            {current > 0 ? (
+              <>
+                <MoneyDisplay amount={current} size="lg"/>
+                {leaderPlayer && (
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'center',
+                    gap:6,marginTop:6,color:GOLD_DIM,fontFamily:"'Jost',sans-serif",fontSize:12}}>
+                    <Avatar name={leaderPlayer.name} colorIndex={leaderPlayer.colorIndex||0} size={20}/>
+                    {leaderPlayer.name} lidera
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{color:'#555',fontFamily:"'Playfair Display',serif",
+                fontSize:18,letterSpacing:'0.05em'}}>Sin pujas</div>
+            )}
+          </div>
+
+          {/* Player status chips */}
+          <div style={{display:'flex',flexWrap:'wrap',gap:6,justifyContent:'center',maxWidth:210}}>
+            {players.map(p => {
+              const isLdr = p.id === leaderId;
+              const hasPassed = !!passed[p.id];
+              const color = isLdr ? GOLD : hasPassed ? '#444' : GREEN_CLR;
+              const label = isLdr ? 'Líder' : hasPassed ? 'Pasó' : 'En juego';
+              return (
+                <div key={p.id} style={{display:'flex',alignItems:'center',gap:5,
+                  background:isLdr?'rgba(218,165,32,0.1)':hasPassed?'rgba(0,0,0,0.3)':'rgba(0,120,50,0.08)',
+                  border:`1px solid ${color}44`,borderRadius:20,padding:'3px 8px',
+                  opacity:hasPassed?0.55:1}}>
+                  <Avatar name={p.name} colorIndex={p.colorIndex||0} size={18}/>
+                  <span style={{color,fontFamily:"'Jost',sans-serif",fontSize:10}}>{label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Right: my action panel */}
+        <Card style={{flex:1,minWidth:260,maxWidth:320}}>
           <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
-            <Avatar name={me.name||'?'} colorIndex={me.colorIndex||0} size={36}/>
+            <Avatar name={me.name||'?'} colorIndex={me.colorIndex||0} size={34}/>
             <div>
               <div style={{color:GOLD_LIGHT,fontFamily:"'Playfair Display',serif",
                 fontSize:14,fontWeight:600}}>{me.name}</div>
               <div style={{display:'flex',alignItems:'center',gap:5,marginTop:2}}>
-                <span style={{color:'#888',fontFamily:"'Jost',sans-serif",fontSize:11}}>
-                  Efectivo:
-                </span>
+                <span style={{color:'#888',fontFamily:"'Jost',sans-serif",fontSize:11}}>Efectivo:</span>
                 <MoneyDisplay amount={me.cash||0} size="sm"/>
               </div>
             </div>
           </div>
           <GoldDivider/>
-          {hasBid ? (
-            <div style={{margin:'14px 0',textAlign:'center'}}>
-              <div style={{width:44,height:44,borderRadius:'50%',
-                background:'rgba(0,120,50,0.12)',border:`1px solid ${GREEN_CLR}`,
+
+          {/* State: I'm the leader */}
+          {iAmLeader && (
+            <div style={{margin:'16px 0',textAlign:'center'}}>
+              <div style={{width:48,height:48,borderRadius:'50%',
+                background:'rgba(218,165,32,0.12)',border:`1px solid ${GOLD}`,
                 display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 10px'}}>
-                <Ico name="check" size={20} color={GREEN_CLR}/>
+                <Ico name="crown" size={22} color={GOLD}/>
               </div>
-              <p style={{color:GOLD_DIM,fontFamily:"'Jost',sans-serif",fontSize:13,margin:0}}>
-                Tu puja: <strong style={{color:GOLD}}>{fmtFull(myBid)}</strong>
+              <p style={{color:GOLD,fontFamily:"'Playfair Display',serif",fontSize:15,margin:0}}>
+                Eres el líder
               </p>
               <p style={{color:'#666',fontFamily:"'Jost',sans-serif",fontSize:12,margin:'6px 0 0'}}>
-                Esperando a los demás...
+                Puja actual: {fmtFull(current)}. Esperando a que los demás suban o pasen.
               </p>
-              <div style={{marginTop:12}}>
-                <WaitingFor players={players} doneIds={bidsDone.map(p=>p.id)} label="Sin pujar"/>
-              </div>
+              {stillIn.filter(p=>p.id!==me.id).length===0 && (
+                <p style={{color:GREEN_CLR,fontFamily:"'Jost',sans-serif",fontSize:12,margin:'10px 0 0',fontWeight:600}}>
+                  ¡Ganaste! Procesando...
+                </p>
+              )}
             </div>
-          ) : (
-            <div style={{margin:'12px 0'}}>
-              <p style={{color:'#888',fontFamily:"'Jost',sans-serif",
-                fontSize:12,margin:'0 0 12px',lineHeight:1.5}}>
-                {isProperty
-                  ? 'Una propiedad con renta mensual garantizada. Solo el ganador verá el valor exacto.'
-                  : 'Puede ser una bendición o una maldición. Solo el ganador lo descubrirá.'}
+          )}
+
+          {/* State: I passed */}
+          {iHavePassed && !iAmLeader && (
+            <div style={{margin:'16px 0',textAlign:'center'}}>
+              <div style={{width:48,height:48,borderRadius:'50%',
+                background:'rgba(80,80,80,0.12)',border:`1px solid #444`,
+                display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 10px'}}>
+                <Ico name="x" size={22} color="#555"/>
+              </div>
+              <p style={{color:'#666',fontFamily:"'Jost',sans-serif",fontSize:13,margin:0}}>
+                Has pasado en este objeto
               </p>
-              <label style={{color:GOLD_DIM,fontFamily:"'Jost',sans-serif",
-                fontSize:11,display:'block',marginBottom:5}}>
-                Tu puja (máx. {fmtFull(me.cash||0)})
-              </label>
-              <div style={{display:'flex',gap:6,marginBottom:8}}>
-                <span style={{color:GOLD_DIM,fontFamily:"'Playfair Display',serif",
-                  fontSize:18,lineHeight:'40px'}}>$</span>
-                <input type="text" value={bidInput}
-                  onChange={e=>setBidInput(e.target.value.replace(/\D/g,''))}
-                  onKeyDown={e=>{ if(e.key==='Enter') submitBid(); }}
-                  placeholder="0" autoFocus
-                  style={{flex:1,background:'#180d00',border:`1px solid ${GOLD_DIM}`,
-                    borderRadius:4,padding:'8px 10px',color:GOLD_LIGHT,
-                    fontFamily:"'Playfair Display',serif",fontSize:19,outline:'none'}}/>
+              <p style={{color:'#555',fontFamily:"'Jost',sans-serif",fontSize:11,margin:'6px 0 0'}}>
+                Esperando a que termine la subasta...
+              </p>
+            </div>
+          )}
+
+          {/* State: I can bid */}
+          {canBid && (
+            <div style={{margin:'10px 0'}}>
+              <p style={{color:'#888',fontFamily:"'Jost',sans-serif",
+                fontSize:11,margin:'0 0 10px',lineHeight:1.5}}>
+                {isProperty
+                  ? 'Propiedad con renta mensual garantizada. Solo el ganador conoce el valor exacto.'
+                  : 'Bendición o maldición: solo el ganador descubrirá qué contiene.'}
+              </p>
+
+              {/* Quick bid chips */}
+              <div style={{marginBottom:8}}>
+                <div style={{color:GOLD_DIM,fontFamily:"'Jost',sans-serif",
+                  fontSize:10,letterSpacing:'0.08em',marginBottom:6}}>
+                  {current>0 ? `SUPERAR ${fmtFull(current)} — MÍN. SUBIDA ${fmtFull(minRaise)}` : 'ABRIR SUBASTA'}
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:5,marginBottom:8}}>
+                  {(current > 0
+                    ? [minRaise, minRaise*2, minRaise*4, minRaise*8]
+                    : [5000, 10000, 25000, 50000]
+                  ).map((amt, i) => {
+                    const total = current > 0 ? current + amt : amt;
+                    const affordable = total <= (me.cash||0);
+                    return (
+                      <button key={i}
+                        onClick={() => setBidInput(String(total))}
+                        disabled={!affordable}
+                        style={{background: bidInput===String(total)?'rgba(218,165,32,0.14)':'#180d00',
+                          border:`1px solid ${bidInput===String(total)?GOLD_DIM:BORDER}`,
+                          borderRadius:4,padding:'6px 4px',cursor:affordable?'pointer':'not-allowed',
+                          color:affordable?(bidInput===String(total)?GOLD:'#888'):'#333',
+                          fontFamily:"'Jost',sans-serif",fontSize:11,transition:'all 0.12s',
+                          textAlign:'center'}}>
+                        {current>0 ? `+${fmtFull(amt)}` : fmtFull(amt)}
+                        <div style={{color:'#555',fontSize:9,marginTop:1}}>{fmtFull(total)}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Custom input */}
+                <div style={{display:'flex',gap:5,marginBottom:10}}>
+                  <span style={{color:GOLD_DIM,fontFamily:"'Playfair Display',serif",
+                    fontSize:16,lineHeight:'38px',flexShrink:0}}>$</span>
+                  <input type="text" value={bidInput}
+                    onChange={e => setBidInput(e.target.value.replace(/\D/g,''))}
+                    onKeyDown={e => { if(e.key==='Enter') submitBid(); }}
+                    placeholder={current>0 ? `Mín. ${fmtFull(minBid)}` : 'Monto'}
+                    style={{flex:1,background:'#180d00',border:`1px solid ${bidInput?GOLD_DIM:BORDER}`,
+                      borderRadius:4,padding:'7px 10px',color:GOLD_LIGHT,
+                      fontFamily:"'Playfair Display',serif",fontSize:16,outline:'none'}}/>
+                </div>
+
+                {/* Bid warning */}
+                {bidInput && parseInt(bidInput) < minBid && (
+                  <p style={{color:RED,fontFamily:"'Jost',sans-serif",fontSize:11,margin:'0 0 8px'}}>
+                    Mínimo: {fmtFull(minBid)}
+                  </p>
+                )}
               </div>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:4,marginBottom:12}}>
-                {[10,25,50,100].map(p=>(
-                  <button key={p} onClick={()=>setBidInput(String(Math.floor((me.cash||0)*p/100)))}
-                    style={{background:'#180d00',border:`1px solid ${BORDER}`,borderRadius:3,
-                      padding:'4px 0',color:'#777',fontFamily:"'Jost',sans-serif",
-                      fontSize:11,cursor:'pointer'}}>
-                    {p}%
-                  </button>
-                ))}
+
+              <div style={{display:'flex',gap:8}}>
+                <GoldBtn variant="secondary" size="md" onClick={onPassBid} style={{flex:1}}>
+                  Pasar
+                </GoldBtn>
+                <GoldBtn size="md" onClick={submitBid}
+                  disabled={!bidInput || parseInt(bidInput) < minBid || parseInt(bidInput) > (me.cash||0)}
+                  style={{flex:2}}>
+                  {bidInput && parseInt(bidInput) >= minBid
+                    ? `Pujar ${fmtFull(parseInt(bidInput))}`
+                    : 'Pujar'}
+                </GoldBtn>
               </div>
-              <GoldBtn size="lg" onClick={submitBid} style={{width:'100%'}}>
-                {bidInput&&parseInt(bidInput)>0
-                  ?`Pujar ${fmtFull(parseInt(bidInput))}`
-                  :'Pasar (sin pujar)'}
-              </GoldBtn>
+              {bidInput && parseInt(bidInput) > (me.cash||0) && (
+                <p style={{color:RED,fontFamily:"'Jost',sans-serif",fontSize:11,margin:'6px 0 0',textAlign:'center'}}>
+                  No tienes suficiente efectivo
+                </p>
+              )}
             </div>
           )}
         </Card>

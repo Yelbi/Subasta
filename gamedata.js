@@ -188,6 +188,123 @@ window.GD = {
       effect:'stolen_cash', value:60000 },
   ],
 
+  // ── ARTEFACTOS EXTRA (fantasía / magia) ──────────────────────────────
+  EXTRA_ARTIFACTS: [
+    // ── BENDICIONES ──────────────────────────────────────────────────────
+    { id:'eternal_flame',    name:'La Llama Eterna',           type:'blessing', rarity:'rara',
+      flavor:'Una llama que arde sin combustible. Tu riqueza tampoco necesita descanso.',
+      desc:'Tus inversiones rinden el doble durante 2 meses.',
+      effect:'investment_multiplier', value:2.0, duration:2 },
+
+    { id:'treasure_map',     name:'El Mapa del Tesoro',        type:'blessing', rarity:'infrecuente',
+      flavor:'Las X en los mapas de piratas nunca mienten. O casi nunca.',
+      desc:'Encuentras entre $50,000 y $400,000 en un cofre olvidado.',
+      effect:'random_cash', minVal:50000, maxVal:400000 },
+
+    { id:'gold_potion',      name:'La Poción del Oro',         type:'blessing', rarity:'infrecuente',
+      flavor:'El alquimista cobró caro, pero valió cada peso.',
+      desc:'Recibes $130,000 en efectivo de inmediato.',
+      effect:'cash_bonus', value:130000 },
+
+    { id:'dragon_seal',      name:'El Sello del Dragón',       type:'blessing', rarity:'rara',
+      flavor:'El dragón antiguo pactó protegerte. Mientras le convenga.',
+      desc:'Inmune a todas las maldiciones durante 3 meses.',
+      effect:'curse_immunity', duration:3 },
+
+    { id:'merchant_bracelet',name:'El Brazalete del Mercader', type:'blessing', rarity:'infrecuente',
+      flavor:'Forjado en los bazares del desierto. El comercio siempre te favorece.',
+      desc:'+$20,000 por cada propiedad tuya, durante 2 meses.',
+      effect:'property_income_boost', value:20000, duration:2 },
+
+    { id:'phoenix_feather',  name:'La Pluma del Fénix',        type:'blessing', rarity:'rara',
+      flavor:'Del fuego nace lo nuevo. De tus cenizas, un palacio.',
+      desc:'Recibes una propiedad valuada en $350,000 sin pagar nada.',
+      effect:'free_property', value:350000 },
+
+    { id:'invert_stone',     name:'La Piedra Inversora',       type:'blessing', rarity:'rara',
+      flavor:'Transforma el plomo en oro y las pérdidas en ganancias.',
+      desc:'Este mes, todas tus pérdidas de inversión se convierten en ganancias equivalentes.',
+      effect:'invert_losses', duration:1 },
+
+    { id:'tax_scepter',      name:'El Cetro del Recaudador',   type:'blessing', rarity:'rara',
+      flavor:'El reino tributa. Todos, sin excepción. Incluso tus rivales.',
+      desc:'Cobras el 18% del efectivo de cada otro jugador.',
+      effect:'steal_all', value:0.18 },
+
+    { id:'silver_compass',   name:'La Brújula de Plata',       type:'blessing', rarity:'infrecuente',
+      flavor:'Siempre señala hacia el dinero. Es un don poco común.',
+      desc:'Ves los retornos reales de este mes antes de invertir (2 meses).',
+      effect:'oracle', duration:2 },
+
+    { id:'merchants_guild',  name:'Gremio de Mercaderes',      type:'blessing', rarity:'infrecuente',
+      flavor:'La membresía cuesta cara. Las ganancias, más.',
+      desc:'Tus negocios rinden el triple este mes.',
+      effect:'investment_multiplier', value:3.0, duration:1 },
+
+    // ── MALDICIONES ──────────────────────────────────────────────────────
+    { id:'vampire_shadow',   name:'La Sombra del Vampiro',     type:'curse', rarity:'infrecuente',
+      flavor:'Llegó de noche y se fue con más de lo que debería.',
+      desc:'Un jugador al azar te roba $100,000.',
+      effect:'stolen_cash', value:100000 },
+
+    { id:'broken_totem',     name:'El Tótem Roto',             type:'curse', rarity:'infrecuente',
+      flavor:'La magia se invirtió. Lo que protegía, ahora destruye.',
+      desc:'Pierdes una propiedad aleatoria para siempre.',
+      effect:'destroy_property' },
+
+    { id:'market_plague',    name:'La Peste del Mercado',      type:'curse', rarity:'rara',
+      flavor:'Se esparció en silencio. No discrimina entre ricos y pobres.',
+      desc:'TODOS los jugadores obtienen 0% de retorno en inversiones este mes.',
+      effect:'market_freeze', duration:1 },
+
+    { id:'debt_spiral',      name:'El Espiral de Deudas',      type:'curse', rarity:'infrecuente',
+      flavor:'Una deuda lleva a otra. Y otra más. Y otra.',
+      desc:'Adquieres una deuda de $200,000 al 25% anual a 6 meses.',
+      effect:'add_debt', value:200000, rate:0.25, duration:6 },
+
+    { id:'blind_tax',        name:'El Impuesto Ciego',         type:'curse', rarity:'común',
+      flavor:'El cobrador no pregunta quién eres. Solo toma.',
+      desc:'Pierdes $40,000 cada mes durante 4 meses.',
+      effect:'monthly_drain', value:40000, duration:4 },
+
+    { id:'chaos_mirror',     name:'El Espejo del Caos',        type:'curse', rarity:'rara',
+      flavor:'Lo que ves en él nunca es lo que esperabas.',
+      desc:'Catástrofe aleatoria: −50% efectivo, pierde 2 propiedades, o deuda de $300K.',
+      effect:'random_catastrophe' },
+
+    { id:'iron_shackles',    name:'Las Cadenas de Hierro',     type:'curse', rarity:'infrecuente',
+      flavor:'Las llevaron los peores deudores del reino. Ahora te tocan a ti.',
+      desc:'Adquieres una deuda de $250,000 al 30% anual a 8 meses.',
+      effect:'add_debt', value:250000, rate:0.30, duration:8 },
+  ],
+
+  // ── EVENTOS DE MERCADO EXTRA (con sabor mágico) ───────────────────────
+  EXTRA_EVENTS: [
+    { id:'dragon_hoards',   name:'Los Dragones Acaparan',      severity:'mixed',  icon:'layers',
+      desc:'Los dragones del norte acaparan metales y tierra. Bienes raíces y materias primas se disparan.',
+      modifiers:{ realestate:0.22, commodities:0.28, crypto:-0.12, stocks:-0.05 } },
+
+    { id:'ancient_oracle',  name:'El Oráculo Habla',           severity:'good',   icon:'eye',
+      desc:'Una profecía dorada guía a los inversores. El mercado reacciona con confianza inusual.',
+      modifiers:{ stocks:0.14, bonds:0.06, business:0.10, realestate:0.07 } },
+
+    { id:'shadow_curse',    name:'Maldición de las Sombras',   severity:'bad',    icon:'alert-triangle',
+      desc:'Una maldición antigua paraliza los mercados. Los inversores huyen despavoridos.',
+      modifiers:{ stocks:-0.18, business:-0.20, crypto:-0.28, realestate:-0.06 } },
+
+    { id:'alchemy_boom',    name:'Revolución Alquímica',       severity:'good',   icon:'zap',
+      desc:'Un descubrimiento alquímico sacude la economía. Materias primas y tecnología en auge.',
+      modifiers:{ commodities:0.32, stocks:0.14, crypto:0.22, bonds:-0.02 } },
+
+    { id:'phantom_market',  name:'El Mercado Fantasma',        severity:'mixed',  icon:'help-circle',
+      desc:'Fuerzas invisibles mueven el mercado en direcciones impredecibles.',
+      modifiers:{ stocks:0.12, bonds:-0.06, crypto:0.28, business:-0.08, realestate:0.04 } },
+
+    { id:'royal_decree',    name:'Decreto Real',               severity:'mixed',  icon:'crown',
+      desc:'El reino impone nuevos tributos. Las propiedades valen más; los negocios sufren.',
+      modifiers:{ realestate:0.18, business:-0.22, bonds:0.08, stocks:-0.05 } },
+  ],
+
   LENDER: {
     name: 'Don Aurelio',
     title: 'El Prestamista',
@@ -226,3 +343,7 @@ window.GD = {
     'Terreno Río Grande',
   ],
 };
+
+// Merge extra content into main arrays
+window.GD.ARTIFACTS     = [...window.GD.ARTIFACTS,     ...window.GD.EXTRA_ARTIFACTS];
+window.GD.MARKET_EVENTS = [...window.GD.MARKET_EVENTS, ...window.GD.EXTRA_EVENTS];

@@ -73,7 +73,7 @@ function applyArtifactEffect(artifact, winnerId, players) {
       case 'destroy_property':
         if((up.properties||[]).length>0){const idx=Math.floor(Math.random()*(up.properties||[]).length);up.properties=(up.properties||[]).filter((_,i)=>i!==idx);} break;
       case 'add_debt':
-        up.loans=[...(up.loans||[]),{id:`d${Date.now()}`,original:artifact.value||150000,remaining:artifact.value||150000,rate:artifact.rate||0.20,monthsLeft:12,label:artifact.name}]; break;
+        up.loans=[...(up.loans||[]),{id:`d${Date.now()}`,original:artifact.value||150000,remaining:artifact.value||150000,rate:artifact.rate||0.20,monthsLeft:artifact.duration||12,label:artifact.name}]; break;
       case 'zero_returns':
         up.activeEffects=[...(up.activeEffects||[]),{type:'zero_returns',monthsLeft:artifact.duration||1,label:'Sombra del Mercado (retornos=0)'}]; break;
       case 'forced_invest':
@@ -93,32 +93,41 @@ function applyArtifactEffect(artifact, winnerId, players) {
       }
       case 'stolen_cash':
         up._stolenAmt = artifact.value||60000; break;
+      case 'invert_losses':
+        up.activeEffects=[...(up.activeEffects||[]),{type:'invert_losses',monthsLeft:artifact.duration||1,label:'Piedra Inversora (pérdidas→ganancias)'}]; break;
+      case 'steal_all':
+        up._stealAllPct=artifact.value||0.15; break;
+      case 'market_freeze':
+        up.activeEffects=[...(up.activeEffects||[]),{type:'market_freeze',monthsLeft:artifact.duration||1,label:'Peste del Mercado (todos 0%)'}]; break;
       default: break;
     }
     return up;
   });
   // ── resolve steal / stolen_cash from firstPass ─────────────────────────
-  const stealWinner  = mapped.find(x => x._stealAmt  && x.id === winnerId);
-  const stolenWinner = mapped.find(x => x._stolenAmt && x.id === winnerId);
-  const nonWinners   = mapped.filter(x => x.id !== winnerId);
-  // pick a random victim for stolen_cash
+  const stealWinner    = mapped.find(x => x._stealAmt    && x.id === winnerId);
+  const stolenWinner   = mapped.find(x => x._stolenAmt   && x.id === winnerId);
+  const stealAllWinner = mapped.find(x => x._stealAllPct && x.id === winnerId);
+  const nonWinners     = mapped.filter(x => x.id !== winnerId);
   const stolenVictimId = (stolenWinner && nonWinners.length > 0)
-    ? nonWinners[Math.floor(Math.random() * nonWinners.length)].id
-    : null;
+    ? nonWinners[Math.floor(Math.random() * nonWinners.length)].id : null;
 
-  return mapped.map(p => {
-    const { _stealAmt, _stolenAmt, ...clean } = p;
+  let totalStolenAll = 0;
+  const pass1 = mapped.map(p => {
+    const { _stealAmt, _stolenAmt, _stealAllPct, ...clean } = p;
     let cash = clean.cash || 0;
-    // steal_cash: winner steals from every other player
-    if (stealWinner && p.id !== winnerId) {
-      cash = Math.max(0, cash - (stealWinner._stealAmt || 0));
-    }
-    // stolen_cash: one random victim loses money
-    if (stolenVictimId && p.id === stolenVictimId) {
-      cash = Math.max(0, cash - (stolenWinner._stolenAmt || 0));
+    if (stealWinner    && p.id !== winnerId) cash = Math.max(0, cash - (stealWinner._stealAmt||0));
+    if (stolenVictimId && p.id === stolenVictimId) cash = Math.max(0, cash - (stolenWinner._stolenAmt||0));
+    if (stealAllWinner && p.id !== winnerId) {
+      const amt = Math.floor(cash * (stealAllWinner._stealAllPct||0));
+      totalStolenAll += amt;
+      cash = Math.max(0, cash - amt);
     }
     return { ...clean, cash };
   });
+  return pass1.map(p =>
+    (stealAllWinner && p.id === winnerId && totalStolenAll > 0)
+      ? { ...p, cash: (p.cash||0) + totalStolenAll } : p
+  );
 }
 
 // ── CONFIG SCREEN ────────────────────────────
@@ -909,7 +918,17 @@ function App() {
     if(!room||!isHost||!game||game.phase==='lobby'||game.phase==='final'||game.phase==='standings'||game.phase==='simulate') return;
     const waiting = game.waitingFor||{};
     const stillWaiting = players.filter(p=>waiting[p.id]===true);
-    if(stillWaiting.length>0||advancingRef.current) return;
+    // Ascending auction: use ascBid state instead of waitingFor
+    const isAscBidding = game.phase==='auction' && game.auctionPhase!=='reveal';
+    if (isAscBidding) {
+      const ab=game.ascBid||{}; const passedObj=ab.passed||{};
+      const allPassed=players.every(p=>passedObj[p.id]);
+      const leaderWins=ab.leaderId&&!passedObj[ab.leaderId]&&
+        players.filter(p=>p.id!==ab.leaderId).every(p=>passedObj[p.id]);
+      if((!allPassed&&!leaderWins)||advancingRef.current) return;
+    } else {
+      if(stillWaiting.length>0||advancingRef.current) return;
+    }
 
     const advance=async()=>{
       if(advancingRef.current) return;
@@ -957,7 +976,10 @@ function App() {
                 if(ef.type==='investment_multiplier') mult*=ef.value;
                 if(ef.type==='zero_returns') ret=0;
                 if(ef.type==='business_zero'&&inv.type==='business') ret=0;
+                if(ef.type==='invert_losses'&&ret<0) ret=Math.abs(ret);
               });
+              // market_freeze: any player holding this effect zeros ALL players' returns
+              if(players.some(px=>toArr(px.activeEffects).some(ef=>ef.type==='market_freeze'&&(ef.monthsLeft||0)>0))) ret=0;
               ret*=mult;
               // Insurance: cap losses at -10%
               let capped=false;
@@ -1043,47 +1065,36 @@ function App() {
           const arts=toArr(game.auctionArtifacts);
           const artIdx=game.currentArtifactIdx||0;
           const art=arts[artIdx];
-          const bids=game.auctionBids||{};
-          const artBids=bids[art?.id]||{};
-          // Already revealed — move to next or loans
           if(game.auctionPhase==='reveal') {
-            if(artIdx<arts.length-1) {
-              const w={}; players.forEach(p=>{ w[p.id]=true; });
-              await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/currentArtifactIdx':artIdx+1,'game/auctionPhase':'bidding','game/waitingFor':w,'game/auctionWinner':null});
-            } else {
-              const w={}; players.forEach(p=>{ w[p.id]=true; });
-              await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'loans','game/waitingFor':w,'game/loanDecisions':null});
-            }
-          } else {
-            // All bids in — compute winner (shuffle first for fair tie-breaking)
-            let winId=null,winAmt=-1;
-            Object.entries(artBids).sort(()=>Math.random()-0.5).forEach(([pid,amt])=>{ if(amt>winAmt){winAmt=amt;winId=pid;} });
-            const winner={playerId:winId,amount:winAmt};
-            // Apply artifact or property to winner
-            let updPlayers=[...players];
-            if(winId&&winAmt>0) {
-              if(art.type==='property') {
-                // Add property to winner's portfolio
-                updPlayers=updPlayers.map(p=>p.id===winId?{
-                  ...p,
-                  cash:Math.max(0,(p.cash||0)-winAmt),
-                  properties:[...toArr(p.properties),{
-                    id:art.id,name:art.name,value:art.value,
-                    monthlyRent:art.monthlyRent,
-                  }],
-                }:p);
-              } else {
-                const immune=(room.players[winId]?.activeEffects||[]).some(e=>e.type==='curse_immunity'&&(e.monthsLeft||0)>0);
-                if(!(art.type==='curse'&&immune)) {
-                  updPlayers=applyArtifactEffect(art,winId,updPlayers);
-                }
-                updPlayers=updPlayers.map(p=>p.id===winId?{...p,cash:Math.max(0,(p.cash||0)-winAmt)}:p);
-              }
-            }
-            const playerUpdates={};
-            updPlayers.forEach(p=>{ playerUpdates[`players/${p.id}`]=p; });
-            await fbPatch(fbUrl,`rooms/${roomCode}`,{...playerUpdates,'game/auctionPhase':'reveal','game/auctionWinner':winner,'game/waitingFor':null});
+            // reveal is advanced manually via nextArtifact() button
+            return;
           }
+          // Ascending auction ended — compute winner from ascBid
+          const ab=game.ascBid||{};
+          const winId=ab.leaderId||null;
+          const winAmt=winId?(ab.current||0):0;
+          const winner={playerId:winId,amount:winAmt};
+          let updPlayers=[...players];
+          if(winId&&winAmt>0) {
+            if(art.type==='property') {
+              updPlayers=updPlayers.map(p=>p.id===winId?{
+                ...p,cash:Math.max(0,(p.cash||0)-winAmt),
+                properties:[...toArr(p.properties),{id:art.id,name:art.name,value:art.value,monthlyRent:art.monthlyRent}],
+              }:p);
+            } else {
+              const immune=(room.players[winId]?.activeEffects||[]).some(e=>e.type==='curse_immunity'&&(e.monthsLeft||0)>0);
+              if(!(art.type==='curse'&&immune)) updPlayers=applyArtifactEffect(art,winId,updPlayers);
+              updPlayers=updPlayers.map(p=>p.id===winId?{...p,cash:Math.max(0,(p.cash||0)-winAmt)}:p);
+            }
+          }
+          const playerUpdates={};
+          updPlayers.forEach(p=>{ playerUpdates[`players/${p.id}`]=p; });
+          const w={}; players.forEach(p=>{ w[p.id]=true; });
+          await fbPatch(fbUrl,`rooms/${roomCode}`,{
+            ...playerUpdates,
+            'game/auctionPhase':'reveal','game/auctionWinner':winner,
+            'game/waitingFor':w,'game/ascBid':null,
+          });
         }
         else if(game.phase==='loans') {
           await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'standings','game/waitingFor':null});
@@ -1111,18 +1122,28 @@ function App() {
     });
   };
 
-  const submitBid = async (artId, amount) => {
-    const updates={};
-    updates[`game/auctionBids/${artId}/${myId}`]=amount;
-    updates[`game/waitingFor/${myId}`]=null;
-    await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
+  const placeBid = async (amount) => {
+    await fbPatch(fbUrl,`rooms/${roomCode}`,{
+      'game/ascBid/current':amount,
+      'game/ascBid/leaderId':myId,
+    });
+    window.SFX?.coin?.();
+  };
+  const passBid = async () => {
+    await fbPatch(fbUrl,`rooms/${roomCode}`,{
+      [`game/ascBid/passed/${myId}`]:true,
+    });
+    window.SFX?.click?.();
   };
 
   const submitLoan = async (loan) => {
     const updates={};
     if(loan) {
+      // Write loans as a complete array (not nested object) so Firebase
+      // returns it as a numeric-keyed array, which safeArr/calcNetWorth handles correctly
+      const currentLoans = toArr(me?.loans || []);
       updates[`players/${myId}/cash`]=(me.cash||0)+loan.original;
-      updates[`players/${myId}/loans/${loan.id}`]=loan;
+      updates[`players/${myId}/loans`]=[...currentLoans, loan];
     }
     updates[`game/loanDecisions/${myId}`]=true;
     updates[`game/waitingFor/${myId}`]=null;
@@ -1130,15 +1151,22 @@ function App() {
   };
 
   const simulateContinue = async () => {
-    const w={}; players.forEach(p=>{ w[p.id]=true; });
-    await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'auction','game/waitingFor':w});
+    await fbPatch(fbUrl,`rooms/${roomCode}`,{
+      'game/phase':'auction','game/waitingFor':null,
+      'game/auctionPhase':'bidding','game/auctionWinner':null,
+      'game/auctionBids':null,'game/currentArtifactIdx':0,
+      'game/ascBid':{current:0,leaderId:null,passed:{},minRaise:5000},
+    });
   };
 
   const nextArtifact = async () => {
     const arts=toArr(game.auctionArtifacts), artIdx=game.currentArtifactIdx||0;
     if(artIdx<arts.length-1) {
-      const w={}; players.forEach(p=>{ w[p.id]=true; });
-      await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/currentArtifactIdx':artIdx+1,'game/auctionPhase':'bidding','game/waitingFor':w,'game/auctionWinner':null});
+      await fbPatch(fbUrl,`rooms/${roomCode}`,{
+        'game/currentArtifactIdx':artIdx+1,'game/auctionPhase':'bidding',
+        'game/waitingFor':null,'game/auctionWinner':null,
+        'game/ascBid':{current:0,leaderId:null,passed:{},minRaise:5000},
+      });
     } else {
       const w={}; players.forEach(p=>{ w[p.id]=true; });
       await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'loans','game/waitingFor':w,'game/loanDecisions':null});
@@ -1197,14 +1225,15 @@ function App() {
   if(phase==='simulate') return (
     <GameWrapper game={game} players={players} myId={myId} me={me} roomCode={roomCode} leave={leave}>
       <SimulationScreen players={players} month={game.month||1}
-        simResults={game.simResults||{}} onContinue={simulateContinue} isHost={isHost}/>
+        simResults={game.simResults||{}} onContinue={simulateContinue} isHost={isHost}
+        event={game.currentEvent} news={toArr(game.currentNews)}/>
     </GameWrapper>
   );
 
   if(phase==='auction') return (
     <GameWrapper game={game} players={players} myId={myId} me={me} roomCode={roomCode} leave={leave}>
       <AuctionPhase me={me} players={players} artifacts={arts}
-        artIdx={artIdx} bids={game.auctionBids||{}} onBid={submitBid}
+        artIdx={artIdx} ascBid={game.ascBid||{}} onPlaceBid={placeBid} onPassBid={passBid}
         phase={game.auctionPhase||'bidding'} winner={game.auctionWinner}
         onNextArtifact={nextArtifact} isHost={isHost} month={game.month||1}
         chatMessages={chatMessages} onChatSend={sendChat}/>

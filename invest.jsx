@@ -379,7 +379,7 @@ function InvestmentPhase({ player, month, gameSeed, onConfirm, hasOracle, oracle
 }
 
 // ── SIMULATION SCREEN ─────────────────────────
-function SimulationScreen({ players, month, simResults, onContinue, isHost }) {
+function SimulationScreen({ players, month, simResults, onContinue, isHost, event, news }) {
   const [visible, setVisible] = useState(false);
   useEffect(()=>{ setTimeout(()=>setVisible(true),350); },[]);
   const sorted = [...players].sort((a,b)=>(simResults?.[b.id]?.netChange||0)-(simResults?.[a.id]?.netChange||0));
@@ -393,6 +393,48 @@ function SimulationScreen({ players, month, simResults, onContinue, isHost }) {
         </p>
         <GoldDivider/>
       </div>
+
+      {/* Event + news accuracy reveal */}
+      {(event || (news && news.length > 0)) && (
+        <div style={{display:'flex',flexWrap:'wrap',gap:12,marginBottom:20}}>
+          {event && (
+            <div style={{flex:'1 1 220px'}}>
+              <EventBanner event={event}/>
+            </div>
+          )}
+          {news && news.length > 0 && (
+            <Card style={{flex:'1 1 220px',padding:'12px 14px'}}>
+              <div style={{color:GOLD_DIM,fontFamily:"'Jost',sans-serif",fontSize:10,
+                letterSpacing:'0.12em',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                <Ico name="eye" size={12} color={GOLD_DIM}/>
+                NOTICIAS — VEREDICTO
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                {news.map((item,i)=>{
+                  const eventMods = event?.modifiers || {};
+                  // Accurate if the news target benefited from the event
+                  const modVal = eventMods[item.target] || 0;
+                  const wasRight = item.accurate ? modVal >= 0 : modVal < 0;
+                  const color = wasRight ? GREEN_CLR : RED;
+                  return (
+                    <div key={i} style={{display:'flex',alignItems:'flex-start',gap:8,
+                      background:'#0e0800',borderRadius:5,padding:'7px 10px'}}>
+                      <div style={{width:18,height:18,borderRadius:'50%',flexShrink:0,
+                        background:wasRight?'rgba(0,120,50,0.18)':'rgba(160,20,20,0.18)',
+                        border:`1px solid ${color}`,
+                        display:'flex',alignItems:'center',justifyContent:'center',marginTop:1}}>
+                        <Ico name={wasRight?'check':'x'} size={10} color={color}/>
+                      </div>
+                      <p style={{color:'#999',fontFamily:"'Jost',sans-serif",fontSize:11,
+                        margin:0,lineHeight:1.5,fontStyle:'italic'}}>{item.text}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
 
       <div style={{display:'flex',flexDirection:'column',gap:12,marginBottom:24}}>
         {sorted.map((player,idx)=>{
