@@ -176,10 +176,14 @@ function FlipRevealCard({ item, isWinner }) {
 function ChatPanel({ messages, myId, myName, onSend }) {
   const [text, setText] = useState('');
   const [open, setOpen] = useState(false);
+  const [seenCount, setSeenCount] = useState(0);
   const endRef = useRef(null);
 
   useEffect(()=>{
-    if (open && endRef.current) endRef.current.scrollTop = endRef.current.scrollHeight;
+    if (open) {
+      setSeenCount(messages.length);
+      if (endRef.current) endRef.current.scrollTop = endRef.current.scrollHeight;
+    }
   },[messages, open]);
 
   const send = () => {
@@ -190,7 +194,7 @@ function ChatPanel({ messages, myId, myName, onSend }) {
     window.SFX?.click?.();
   };
 
-  const unread = messages.length;
+  const unread = Math.max(0, messages.length - seenCount);
 
   return (
     <div style={{position:'fixed',bottom:20,right:20,zIndex:100}}>

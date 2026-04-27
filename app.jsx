@@ -41,7 +41,7 @@ function toArr(v) {
 
 // ── ARTIFACT EFFECT APPLIER ──────────────────
 function applyArtifactEffect(artifact, winnerId, players) {
-  return players.map(p => {
+  const mapped = players.map(p => {
     if (p.id !== winnerId) return p;
     const up = { ...p, artifacts: [...(p.artifacts||[]), artifact] };
     switch(artifact.effect) {
@@ -96,17 +96,28 @@ function applyArtifactEffect(artifact, winnerId, players) {
       default: break;
     }
     return up;
-  }).map(p => {
-    const thief = players.find(x=>x._stealAmt&&x.id===winnerId&&x.id!==p.id);
-    if (thief) return {...p, cash:Math.max(0,(p.cash||0)-(thief._stealAmt||0))};
-    // stolen_cash: random victim
-    const stolenBy = players.find(x=>x._stolenAmt&&x.id===winnerId&&x.id!==p.id);
-    if (stolenBy&&p.id!==winnerId) {
-      const victims = players.filter(x=>x.id!==winnerId);
-      if (victims[0]?.id===p.id) return {...p,cash:Math.max(0,(p.cash||0)-(stolenBy._stolenAmt||0))};
-    }
+  });
+  // ── resolve steal / stolen_cash from firstPass ─────────────────────────
+  const stealWinner  = mapped.find(x => x._stealAmt  && x.id === winnerId);
+  const stolenWinner = mapped.find(x => x._stolenAmt && x.id === winnerId);
+  const nonWinners   = mapped.filter(x => x.id !== winnerId);
+  // pick a random victim for stolen_cash
+  const stolenVictimId = (stolenWinner && nonWinners.length > 0)
+    ? nonWinners[Math.floor(Math.random() * nonWinners.length)].id
+    : null;
+
+  return mapped.map(p => {
     const { _stealAmt, _stolenAmt, ...clean } = p;
-    return clean;
+    let cash = clean.cash || 0;
+    // steal_cash: winner steals from every other player
+    if (stealWinner && p.id !== winnerId) {
+      cash = Math.max(0, cash - (stealWinner._stealAmt || 0));
+    }
+    // stolen_cash: one random victim loses money
+    if (stolenVictimId && p.id === stolenVictimId) {
+      cash = Math.max(0, cash - (stolenWinner._stolenAmt || 0));
+    }
+    return { ...clean, cash };
   });
 }
 
@@ -443,11 +454,14 @@ function StandingsScreen({ room, myId, fbUrl, roomCode, isHost }) {
 
   const nextMonth = async () => {
     const newMonth = month+1;
+    const gameSeed = room.game?.gameSeed || 0;
     const waiting = {};
     Object.values(room.players||{}).forEach(p=>{ waiting[p.id]=true; });
     const evtIdx = Math.floor(seededRand(room.game?.gameSeed+newMonth*17)*GD.MARKET_EVENTS.length);
     const currentEvent = GD.MARKET_EVENTS[evtIdx];
-    const shuffledNews = [...GD.MARKET_NEWS].sort(()=>Math.random()-0.5).slice(0,3);
+    const shuffledNews = [...GD.MARKET_NEWS]
+      .map((item,i)=>({item,sort:seededRand(gameSeed+newMonth*31+i*17)}))
+      .sort((a,b)=>a.sort-b.sort).slice(0,3).map(x=>x.item);
     await fbPatch(fbUrl, `rooms/${roomCode}`, {
       'game/phase': newMonth>12?'final':'invest',
       'game/month': newMonth,
@@ -524,7 +538,33 @@ function FinalScreen({ room, fbUrl, roomCode, onLeave }) {
   const medals = ['I','II','III','IV','V','VI'];
 
   const restart = async () => {
-    await fbPatch(fbUrl, `rooms/${roomCode}`, { 'meta/status':'lobby', 'game/phase':'lobby', 'game/month':1 });
+    const playerResets = {};
+    Object.values(room.players||{}).forEach(p => {
+      playerResets[`players/${p.id}`] = {
+        ...p,
+        cash:0, investments:[], properties:[], loans:[],
+        activeEffects:[], artifacts:[], history:[], bankrupt:false,
+      };
+    });
+    const deck = [...GD.ARTIFACTS].sort(()=>Math.random()-0.5);
+    const propDeck = [...GD.AUCTION_PROPERTIES].sort(()=>Math.random()-0.5);
+    await fbPatch(fbUrl, `rooms/${roomCode}`, {
+      'meta/status':'lobby',
+      'game/phase':'lobby',
+      'game/month':1,
+      'game/artifactDeck':deck,
+      'game/artifactDeckIdx':0,
+      'game/propertyDeck':propDeck,
+      'game/propertyDeckIdx':0,
+      'game/rouletteResults':null,
+      'game/simResults':null,
+      'game/auctionBids':null,
+      'game/auctionWinner':null,
+      'game/loanDecisions':null,
+      'game/investPlans':null,
+      'game/insuranceBuyers':null,
+      ...playerResets,
+    });
   };
 
   return (
@@ -570,320 +610,6 @@ function FinalScreen({ room, fbUrl, roomCode, onLeave }) {
     </div>
   );
 }
-
-// ── MAIN APP ──────────────────────────────────
-function App() {
-  const [fbUrl,  setFbUrl]  = useState(localStorage.getItem('subasta_fb')||'');
-  const [roomCode, setRoom] = useState(localStorage.getItem('subasta_room')||window.location.hash.slice(1)||'');
-  const [myId,   setMyId]   = useState(localStorage.getItem('subasta_player')||'');
-  const [roomState, setRS]  = useState(null);
-  const [status, setStatus] = useState('idle');
-  const advancingRef = useRef(false);
-
-  // Derived state — computed unconditionally (hooks must not be conditional)
-  const room = roomState;
-  const game = room?.game;
-  const me   = room?.players?.[myId];
-  const players = useMemo(()=>Object.values(room?.players||{}),[room]);
-  const isHost = room?.meta?.hostId===myId;
-  const hasOracle = useMemo(()=>toArr(me?.activeEffects).some(e=>e.type==='oracle'&&(e.monthsLeft||0)>0),[me]);
-  const oracleData = useMemo(()=>{
-    if(!hasOracle||!game) return {};
-    return Object.fromEntries(GD.INVESTMENTS.map(inv=>[inv.id,getMonthReturn(inv,game.month,game.gameSeed)]));
-  },[hasOracle,game]);
-
-  // Save firebase URL
-  const saveFb = (url) => { localStorage.setItem('subasta_fb',url); setFbUrl(url); };
-
-  // Poll room state
-  useEffect(()=>{
-    if(!roomCode||!fbUrl) return;
-    let active=true;
-    const poll=async()=>{
-      try {
-        const d=await fbGet(fbUrl,`rooms/${roomCode}`);
-        if(active){ setRS(d); setStatus(d?'ok':'notfound'); }
-      } catch(e){ if(active) setStatus('error'); }
-    };
-    poll();
-    const iv=setInterval(poll,2500);
-    return()=>{ active=false; clearInterval(iv); };
-  },[roomCode,fbUrl]);
-
-  // Host advances phases
-  useEffect(()=>{
-    if(!room||!isHost||!game||game.phase==='lobby'||game.phase==='final'||game.phase==='standings'||game.phase==='simulate') return;
-    const waiting = game.waitingFor||{};
-    const stillWaiting = players.filter(p=>waiting[p.id]===true);
-    if(stillWaiting.length>0||advancingRef.current) return;
-
-    const advance=async()=>{
-      if(advancingRef.current) return;
-      advancingRef.current=true;
-      try {
-        if(game.phase==='roulette') {
-          const w={}; players.forEach(p=>{ w[p.id]=true; });
-          // Pick random market event and 3 news items for this month
-          const evtIdx = Math.floor(seededRand(game.gameSeed+game.month*17)*GD.MARKET_EVENTS.length);
-          const currentEvent = GD.MARKET_EVENTS[evtIdx];
-          // Pick 3 random news items (mix accurate/inaccurate)
-          const shuffledNews = [...GD.MARKET_NEWS].sort(()=>seededRand(game.gameSeed+game.month*31+Math.random()*999)-0.5).slice(0,3);
-          await fbPatch(fbUrl,`rooms/${roomCode}`,{
-            'game/phase':'invest','game/waitingFor':w,'game/investPlans':null,
-            'game/insuranceBuyers':null,'game/currentEvent':currentEvent,
-            'game/currentNews':shuffledNews,
-          });
-        }
-        else if(game.phase==='invest') {
-          // ── Run simulation ──────────────────────────────────────────
-          // NOTE: p.cash is already (original - invested) because submitInvestment
-          // deducted it. We return principal + gain/loss: cash += amount*(1+ret)
-          const plans=game.investPlans||{};
-          const updatedPlayers={};
-          const simResults={};  // stored so SimulationScreen can display them
-
-          players.forEach(p=>{
-            const invs=toArr(plans[p.id]||[]);
-            const isInsured=(game.insuranceBuyers||{})[p.id]===true;
-            const isBankrupt=(p.cash||0)<=0&&toArr(p.loans).length>0;
-            let cash=p.cash||0;
-            const invResults=[];
-            const eventMods=(game.currentEvent?.modifiers)||{};
-
-            invs.forEach(inv=>{
-              const it=GD.INVESTMENTS.find(i=>i.id===inv.type);
-              if(!it) return;
-              let ret=getMonthReturn(it,game.month,game.gameSeed);
-              // Apply event modifier
-              ret+=(eventMods[inv.type]||0);
-              let mult=1;
-              toArr(p.activeEffects).filter(e=>(e.monthsLeft||0)>0).forEach(ef=>{
-                if(ef.type==='investment_multiplier') mult*=ef.value;
-                if(ef.type==='zero_returns') ret=0;
-                if(ef.type==='business_zero'&&inv.type==='business') ret=0;
-              });
-              ret*=mult;
-              // Insurance: cap losses at -10%
-              let capped=false;
-              if(isInsured&&ret<-0.10){ ret=-0.10; capped=true; }
-              const returned=Math.round((inv.amount||0)*(1+ret));
-              const gain=returned-(inv.amount||0);
-              cash+=returned;
-              invResults.push({type:inv.type,amount:inv.amount,returned,gain,ret,capped,name:it.name,color:it.color});
-            });
-
-            // property income
-            let propIncome=0;
-            toArr(p.properties).forEach(pr=>{ propIncome+=(pr.monthlyRent||Math.round((pr.value||0)*0.025)); });
-            const boost=toArr(p.activeEffects).find(e=>e.type==='property_income_boost'&&(e.monthsLeft||0)>0);
-            if(boost) propIncome+=toArr(p.properties).length*(boost.value||0);
-            cash+=propIncome;
-
-            // monthly drain (maldición)
-            let drain=0;
-            toArr(p.activeEffects).filter(e=>e.type==='monthly_drain'&&(e.monthsLeft||0)>0).forEach(e=>{ drain+=(e.value||0); });
-            cash-=drain;
-
-            // loan interest — calculate on ORIGINAL remaining before updating
-            let loanInterest=0;
-            const newLoans=toArr(p.loans).map(l=>{
-              const interest=Math.round((l.remaining||0)*(l.rate||0)/12);
-              loanInterest+=interest;
-              cash-=interest;
-              // Reduce remaining (partial principal reduction)
-              const principalPay=Math.max(0,Math.round((l.original||l.remaining||0)/(l.monthsLeft||12)));
-              const newRemaining=Math.max(0,(l.remaining||0)-principalPay+interest);
-              return {...l,remaining:newRemaining,monthsLeft:Math.max(0,(l.monthsLeft||0)-1)};
-            }).filter(l=>(l.remaining||0)>0&&(l.monthsLeft||0)>0);
-
-            // tick down active effects
-            const newEffects=toArr(p.activeEffects)
-              .map(e=>({...e,monthsLeft:(e.monthsLeft||0)-1}))
-              .filter(e=>e.monthsLeft>0);
-
-            const oldCash=(p.cash||0)+(invs.reduce((s,i)=>s+(i.amount||0),0));
-            const newCash=Math.max(0,cash);
-            // Bankruptcy flag: cash=0 AND has loans
-            const nowBankrupt=newCash<=0&&newLoans.length>0;
-            // Update history for net worth chart
-            const nw=newCash+toArr(p.properties).reduce((s,pr)=>s+(pr.value||0),0)-newLoans.reduce((s,l)=>s+(l.remaining||0),0);
-            const newHistory=[...toArr(p.history),{month:game.month,netWorth:nw}];
-
-            simResults[p.id]={invResults,propIncome,drain,loanInterest,
-              oldCash,newCash,netChange:newCash-oldCash,insured:isInsured};
-            updatedPlayers[p.id]={...p,cash:newCash,investments:[],
-              loans:newLoans,activeEffects:newEffects,
-              bankrupt:nowBankrupt,history:newHistory};
-          });
-
-          // Draw 5 items for auction: mix 3 artifacts + 2 properties
-          const deck=toArr(game.artifactDeck);
-          const propDeck=toArr(game.propertyDeck||[]);
-          const idx=game.artifactDeckIdx||0;
-          const pidx=game.propertyDeckIdx||0;
-          const arts=deck.slice(idx,idx+3);
-          const props=propDeck.slice(pidx,pidx+2);
-          // Shuffle the 5 items together
-          const auctionItems=[...arts,...props].sort(()=>Math.random()-0.5);
-          const nextIdx=(idx+3)%deck.length;
-          const nextPidx=(pidx+2)%Math.max(propDeck.length,1);
-          const w={}; players.forEach(p=>{ w[p.id]=true; });
-          const updates={
-            'game/phase':'simulate',
-            'game/simResults':simResults,
-            'game/auctionArtifacts':auctionItems,
-            'game/artifactDeckIdx':nextIdx,
-            'game/propertyDeckIdx':nextPidx,
-            'game/currentArtifactIdx':0,
-            'game/auctionPhase':'bidding',
-            'game/auctionBids':null,
-            'game/auctionWinner':null,
-            'game/waitingFor':w,
-          };
-          players.forEach(p=>{ updates[`players/${p.id}`]=updatedPlayers[p.id]; });
-          await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
-        }
-        else if(game.phase==='auction') {
-          const arts=toArr(game.auctionArtifacts);
-          const artIdx=game.currentArtifactIdx||0;
-          const art=arts[artIdx];
-          const bids=game.auctionBids||{};
-          const artBids=bids[art?.id]||{};
-          // Already revealed — move to next or loans
-          if(game.auctionPhase==='reveal') {
-            if(artIdx<arts.length-1) {
-              const w={}; players.forEach(p=>{ w[p.id]=true; });
-              await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/currentArtifactIdx':artIdx+1,'game/auctionPhase':'bidding','game/waitingFor':w,'game/auctionWinner':null});
-            } else {
-              const w={}; players.forEach(p=>{ w[p.id]=true; });
-              await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'loans','game/waitingFor':w,'game/loanDecisions':null});
-            }
-          } else {
-            // All bids in — compute winner
-            let winId=null,winAmt=-1;
-            Object.entries(artBids).forEach(([pid,amt])=>{ if(amt>winAmt){winAmt=amt;winId=pid;} });
-            const winner={playerId:winId,amount:winAmt};
-            // Apply artifact or property to winner
-            let updPlayers=[...players];
-            if(winId&&winAmt>0) {
-              if(art.type==='property') {
-                // Add property to winner's portfolio
-                updPlayers=updPlayers.map(p=>p.id===winId?{
-                  ...p,
-                  cash:Math.max(0,(p.cash||0)-winAmt),
-                  properties:[...toArr(p.properties),{
-                    id:art.id,name:art.name,value:art.value,
-                    monthlyRent:art.monthlyRent,
-                  }],
-                }:p);
-              } else {
-                const immune=(room.players[winId]?.activeEffects||[]).some(e=>e.type==='curse_immunity'&&(e.monthsLeft||0)>0);
-                if(!(art.type==='curse'&&immune)) {
-                  updPlayers=applyArtifactEffect(art,winId,updPlayers);
-                }
-                updPlayers=updPlayers.map(p=>p.id===winId?{...p,cash:Math.max(0,(p.cash||0)-winAmt)}:p);
-              }
-            }
-            const playerUpdates={};
-            updPlayers.forEach(p=>{ playerUpdates[`players/${p.id}`]=p; });
-            await fbPatch(fbUrl,`rooms/${roomCode}`,{...playerUpdates,'game/auctionPhase':'reveal','game/auctionWinner':winner,'game/waitingFor':null});
-          }
-        }
-        else if(game.phase==='loans') {
-          await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'standings','game/waitingFor':null});
-        }
-      } finally { advancingRef.current=false; }
-    };
-    advance();
-  },[room,isHost,game,players,fbUrl,roomCode]);
-
-  // ── ACTIONS ──────────────────────────────
-  const submitInvestment = async (investments, newCash, insured=false) => {
-    const updates={};
-    updates[`players/${myId}/cash`]=newCash;
-    updates[`players/${myId}/investments`]=investments;
-    updates[`game/investPlans/${myId}`]=investments;
-    if (insured) updates[`game/insuranceBuyers/${myId}`]=true;
-    updates[`game/waitingFor/${myId}`]=null;
-    await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
-  };
-
-  const sendChat = async (text) => {
-    const msgId = `m${Date.now()}`;
-    await fbSet(fbUrl, `rooms/${roomCode}/chat/${msgId}`, {
-      pid:myId, name:(me?.name||'?'), text, ts:Date.now()
-    });
-  };
-
-  const submitBid = async (artId, amount) => {
-    const updates={};
-    updates[`game/auctionBids/${artId}/${myId}`]=amount;
-    updates[`game/waitingFor/${myId}`]=null;
-    await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
-  };
-
-  const submitLoan = async (loan) => {
-    const updates={};
-    if(loan) {
-      updates[`players/${myId}/cash`]=(me.cash||0)+loan.original;
-      updates[`players/${myId}/loans/${loan.id}`]=loan;
-    }
-    updates[`game/loanDecisions/${myId}`]=true;
-    updates[`game/waitingFor/${myId}`]=null;
-    await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
-  };
-
-  const simulateContinue = async () => {
-    const w={}; players.forEach(p=>{ w[p.id]=true; });
-    await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'auction','game/waitingFor':w});
-  };
-
-  const nextArtifact = async () => {
-    const arts=toArr(game.auctionArtifacts), artIdx=game.currentArtifactIdx||0;
-    if(artIdx<arts.length-1) {
-      const w={}; players.forEach(p=>{ w[p.id]=true; });
-      await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/currentArtifactIdx':artIdx+1,'game/auctionPhase':'bidding','game/waitingFor':w,'game/auctionWinner':null});
-    } else {
-      const w={}; players.forEach(p=>{ w[p.id]=true; });
-      await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'loans','game/waitingFor':w,'game/loanDecisions':null});
-    }
-  };
-
-  const leave = () => {
-    localStorage.removeItem('subasta_room');
-    localStorage.removeItem('subasta_player');
-    window.location.hash='';
-    setRoom(''); setMyId(''); setRS(null); setStatus('idle');
-  };
-
-  const chatMessages = useMemo(()=>
-    Object.values(room?.chat||{}).sort((a,b)=>(a.ts||0)-(b.ts||0)).slice(-30)
-  ,[room]);
-
-  // ── RENDER ────────────────────────────────
-  if (!fbUrl) return <ConfigScreen onSave={saveFb}/>;
-  if (!roomCode||!myId) return <LobbyScreen fbUrl={fbUrl} onJoin={(code,pid,initialRoom)=>{ setRoom(code); setMyId(pid); if(initialRoom){setRS(initialRoom);setStatus('ok');} }}/>;
-  if (status==='idle'||status==='error'||!room) {
-    return (
-      <div style={{minHeight:'100vh',background:BG,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
-        <GoldTitle size="md">Conectando...</GoldTitle>
-        {status==='error' && <><p style={{color:RED,fontFamily:"'Jost',sans-serif",fontSize:14}}>Error de conexión</p><GoldBtn onClick={leave}>Volver al inicio</GoldBtn></>}
-      </div>
-    );
-  }
-  if (!me) {
-    return <div style={{minHeight:'100vh',background:BG,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
-      <GoldTitle size="md">Jugador no encontrado</GoldTitle>
-      <GoldBtn onClick={leave}>Volver al inicio</GoldBtn>
-    </div>;
-  }
-
-  const phase      = game?.phase||'lobby';
-  const waiting    = game?.waitingFor||{};
-  const myDone     = waiting[myId]!==true;
-  const waitingArr = players.filter(p=>waiting[p.id]===true).map(p=>p.id);
-  const arts       = toArr(game?.auctionArtifacts);
-  const artIdx     = game?.currentArtifactIdx||0;
 
 // ── GAME WRAPPER (must be outside App to preserve state between polls) ──
 function GameWrapper({ game, players, myId, me, roomCode, leave, children }) {
@@ -1135,286 +861,326 @@ function GameWrapper({ game, players, myId, me, roomCode, leave, children }) {
   );
 }
 
+// ── MAIN APP ──────────────────────────────────
+function App() {
+  const [fbUrl,  setFbUrl]  = useState(localStorage.getItem('subasta_fb')||'');
+  const [roomCode, setRoom] = useState(localStorage.getItem('subasta_room')||window.location.hash.slice(1)||'');
+  const [myId,   setMyId]   = useState(localStorage.getItem('subasta_player')||'');
+  const [roomState, setRS]  = useState(null);
+  const [status, setStatus] = useState('idle');
+  const advancingRef = useRef(false);
+
+  // Derived state — computed unconditionally (hooks must not be conditional)
+  const room = roomState;
+  const game = room?.game;
+  const me   = room?.players?.[myId];
+  const players = useMemo(()=>Object.values(room?.players||{}),[room]);
+  const isHost = room?.meta?.hostId===myId;
+  const hasOracle = useMemo(()=>toArr(me?.activeEffects).some(e=>e.type==='oracle'&&(e.monthsLeft||0)>0),[me]);
+  const oracleData = useMemo(()=>{
+    if(!hasOracle||!game) return {};
+    const eventMods = (game.currentEvent?.modifiers) || {};
+    return Object.fromEntries(GD.INVESTMENTS.map(inv=>[
+      inv.id,
+      getMonthReturn(inv, game.month, game.gameSeed) + (eventMods[inv.id] || 0)
+    ]));
+  },[hasOracle,game]);
+
+  // Save firebase URL
+  const saveFb = (url) => { localStorage.setItem('subasta_fb',url); setFbUrl(url); };
+
+  // Poll room state
+  useEffect(()=>{
+    if(!roomCode||!fbUrl) return;
+    let active=true;
+    const poll=async()=>{
+      try {
+        const d=await fbGet(fbUrl,`rooms/${roomCode}`);
+        if(active){ setRS(d); setStatus(d?'ok':'notfound'); }
+      } catch(e){ if(active) setStatus('error'); }
+    };
+    poll();
+    const iv=setInterval(poll,2500);
+    return()=>{ active=false; clearInterval(iv); };
+  },[roomCode,fbUrl]);
+
+  // Host advances phases
+  useEffect(()=>{
+    if(!room||!isHost||!game||game.phase==='lobby'||game.phase==='final'||game.phase==='standings'||game.phase==='simulate') return;
+    const waiting = game.waitingFor||{};
+    const stillWaiting = players.filter(p=>waiting[p.id]===true);
+    if(stillWaiting.length>0||advancingRef.current) return;
+
+    const advance=async()=>{
+      if(advancingRef.current) return;
+      advancingRef.current=true;
+      try {
+        if(game.phase==='roulette') {
+          const w={}; players.forEach(p=>{ w[p.id]=true; });
+          // Pick random market event and 3 news items for this month
+          const evtIdx = Math.floor(seededRand(game.gameSeed+game.month*17)*GD.MARKET_EVENTS.length);
+          const currentEvent = GD.MARKET_EVENTS[evtIdx];
+          // Pick 3 random news items (mix accurate/inaccurate)
+          const shuffledNews = [...GD.MARKET_NEWS]
+            .map((item,i)=>({item,sort:seededRand(game.gameSeed+game.month*31+i*17)}))
+            .sort((a,b)=>a.sort-b.sort).slice(0,3).map(x=>x.item);
+          await fbPatch(fbUrl,`rooms/${roomCode}`,{
+            'game/phase':'invest','game/waitingFor':w,'game/investPlans':null,
+            'game/insuranceBuyers':null,'game/currentEvent':currentEvent,
+            'game/currentNews':shuffledNews,
+          });
+        }
+        else if(game.phase==='invest') {
+          // ── Run simulation ──────────────────────────────────────────
+          // NOTE: p.cash is already (original - invested) because submitInvestment
+          // deducted it. We return principal + gain/loss: cash += amount*(1+ret)
+          const plans=game.investPlans||{};
+          const updatedPlayers={};
+          const simResults={};  // stored so SimulationScreen can display them
+
+          players.forEach(p=>{
+            const invs=toArr(plans[p.id]||[]);
+            const isInsured=(game.insuranceBuyers||{})[p.id]===true;
+            const isBankrupt=(p.cash||0)<=0&&toArr(p.loans).length>0;
+            let cash=p.cash||0;
+            const invResults=[];
+            const eventMods=(game.currentEvent?.modifiers)||{};
+
+            invs.forEach(inv=>{
+              const it=GD.INVESTMENTS.find(i=>i.id===inv.type);
+              if(!it) return;
+              let ret=getMonthReturn(it,game.month,game.gameSeed);
+              // Apply event modifier
+              ret+=(eventMods[inv.type]||0);
+              let mult=1;
+              toArr(p.activeEffects).filter(e=>(e.monthsLeft||0)>0).forEach(ef=>{
+                if(ef.type==='investment_multiplier') mult*=ef.value;
+                if(ef.type==='zero_returns') ret=0;
+                if(ef.type==='business_zero'&&inv.type==='business') ret=0;
+              });
+              ret*=mult;
+              // Insurance: cap losses at -10%
+              let capped=false;
+              if(isInsured&&ret<-0.10){ ret=-0.10; capped=true; }
+              const returned=Math.round((inv.amount||0)*(1+ret));
+              const gain=returned-(inv.amount||0);
+              cash+=returned;
+              invResults.push({type:inv.type,amount:inv.amount,returned,gain,ret,capped,name:it.name,color:it.color});
+            });
+
+            // property income
+            let propIncome=0;
+            toArr(p.properties).forEach(pr=>{ propIncome+=(pr.monthlyRent||Math.round((pr.value||0)*0.025)); });
+            const boost=toArr(p.activeEffects).find(e=>e.type==='property_income_boost'&&(e.monthsLeft||0)>0);
+            if(boost) propIncome+=toArr(p.properties).length*(boost.value||0);
+            cash+=propIncome;
+
+            // monthly drain (maldición)
+            let drain=0;
+            toArr(p.activeEffects).filter(e=>e.type==='monthly_drain'&&(e.monthsLeft||0)>0).forEach(e=>{ drain+=(e.value||0); });
+            cash-=drain;
+
+            // loan interest — calculate on ORIGINAL remaining before updating
+            let loanInterest=0;
+            const newLoans=toArr(p.loans).map(l=>{
+              const interest=Math.round((l.remaining||0)*(l.rate||0)/12);
+              loanInterest+=interest;
+              cash-=interest;
+              // Reduce remaining (partial principal reduction)
+              const principalPay=Math.max(0,Math.round((l.original||l.remaining||0)/(l.monthsLeft||12)));
+              const newRemaining=Math.max(0,(l.remaining||0)-principalPay);
+              return {...l,remaining:newRemaining,monthsLeft:Math.max(0,(l.monthsLeft||0)-1)};
+            }).filter(l=>(l.remaining||0)>0&&(l.monthsLeft||0)>0);
+
+            // tick down active effects
+            const newEffects=toArr(p.activeEffects)
+              .map(e=>({...e,monthsLeft:(e.monthsLeft||0)-1}))
+              .filter(e=>e.monthsLeft>0);
+
+            const oldCash=(p.cash||0)+(invs.reduce((s,i)=>s+(i.amount||0),0));
+            const newCash=Math.max(0,cash);
+            // Bankruptcy flag: cash=0 AND has loans
+            const nowBankrupt=newCash<=0&&newLoans.length>0;
+            // Update history for net worth chart
+            const nw=newCash+toArr(p.properties).reduce((s,pr)=>s+(pr.value||0),0)-newLoans.reduce((s,l)=>s+(l.remaining||0),0);
+            const newHistory=[...toArr(p.history),{month:game.month,netWorth:nw}];
+
+            simResults[p.id]={invResults,propIncome,drain,loanInterest,
+              oldCash,newCash,netChange:newCash-oldCash,insured:isInsured};
+            updatedPlayers[p.id]={...p,cash:newCash,investments:[],
+              loans:newLoans,activeEffects:newEffects,
+              bankrupt:nowBankrupt,history:newHistory};
+          });
+
+          // Draw 5 items for auction: mix 3 artifacts + 2 properties
+          const deck=toArr(game.artifactDeck);
+          const propDeck=toArr(game.propertyDeck||[]);
+          const idx=game.artifactDeckIdx||0;
+          const pidx=game.propertyDeckIdx||0;
+          const arts=deck.slice(idx,idx+3);
+          const props=propDeck.slice(pidx,pidx+2);
+          // Shuffle the 5 items together
+          const auctionItems=[...arts,...props].sort(()=>Math.random()-0.5);
+          const nextIdx=(idx+3)%deck.length;
+          const nextPidx=(pidx+2)%Math.max(propDeck.length,1);
+          const w={}; players.forEach(p=>{ w[p.id]=true; });
+          const updates={
+            'game/phase':'simulate',
+            'game/simResults':simResults,
+            'game/auctionArtifacts':auctionItems,
+            'game/artifactDeckIdx':nextIdx,
+            'game/propertyDeckIdx':nextPidx,
+            'game/currentArtifactIdx':0,
+            'game/auctionPhase':'bidding',
+            'game/auctionBids':null,
+            'game/auctionWinner':null,
+            'game/waitingFor':w,
+          };
+          players.forEach(p=>{ updates[`players/${p.id}`]=updatedPlayers[p.id]; });
+          await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
+        }
+        else if(game.phase==='auction') {
+          const arts=toArr(game.auctionArtifacts);
+          const artIdx=game.currentArtifactIdx||0;
+          const art=arts[artIdx];
+          const bids=game.auctionBids||{};
+          const artBids=bids[art?.id]||{};
+          // Already revealed — move to next or loans
+          if(game.auctionPhase==='reveal') {
+            if(artIdx<arts.length-1) {
+              const w={}; players.forEach(p=>{ w[p.id]=true; });
+              await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/currentArtifactIdx':artIdx+1,'game/auctionPhase':'bidding','game/waitingFor':w,'game/auctionWinner':null});
+            } else {
+              const w={}; players.forEach(p=>{ w[p.id]=true; });
+              await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'loans','game/waitingFor':w,'game/loanDecisions':null});
+            }
+          } else {
+            // All bids in — compute winner (shuffle first for fair tie-breaking)
+            let winId=null,winAmt=-1;
+            Object.entries(artBids).sort(()=>Math.random()-0.5).forEach(([pid,amt])=>{ if(amt>winAmt){winAmt=amt;winId=pid;} });
+            const winner={playerId:winId,amount:winAmt};
+            // Apply artifact or property to winner
+            let updPlayers=[...players];
+            if(winId&&winAmt>0) {
+              if(art.type==='property') {
+                // Add property to winner's portfolio
+                updPlayers=updPlayers.map(p=>p.id===winId?{
+                  ...p,
+                  cash:Math.max(0,(p.cash||0)-winAmt),
+                  properties:[...toArr(p.properties),{
+                    id:art.id,name:art.name,value:art.value,
+                    monthlyRent:art.monthlyRent,
+                  }],
+                }:p);
+              } else {
+                const immune=(room.players[winId]?.activeEffects||[]).some(e=>e.type==='curse_immunity'&&(e.monthsLeft||0)>0);
+                if(!(art.type==='curse'&&immune)) {
+                  updPlayers=applyArtifactEffect(art,winId,updPlayers);
+                }
+                updPlayers=updPlayers.map(p=>p.id===winId?{...p,cash:Math.max(0,(p.cash||0)-winAmt)}:p);
+              }
+            }
+            const playerUpdates={};
+            updPlayers.forEach(p=>{ playerUpdates[`players/${p.id}`]=p; });
+            await fbPatch(fbUrl,`rooms/${roomCode}`,{...playerUpdates,'game/auctionPhase':'reveal','game/auctionWinner':winner,'game/waitingFor':null});
+          }
+        }
+        else if(game.phase==='loans') {
+          await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'standings','game/waitingFor':null});
+        }
+      } finally { advancingRef.current=false; }
+    };
+    advance();
+  },[room,isHost,game,players,fbUrl,roomCode]);
+
+  // ── ACTIONS ──────────────────────────────
+  const submitInvestment = async (investments, newCash, insured=false) => {
+    const updates={};
+    updates[`players/${myId}/cash`]=newCash;
+    updates[`players/${myId}/investments`]=investments;
+    updates[`game/investPlans/${myId}`]=investments;
+    if (insured) updates[`game/insuranceBuyers/${myId}`]=true;
+    updates[`game/waitingFor/${myId}`]=null;
+    await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
+  };
+
+  const sendChat = async (text) => {
+    const msgId = `m${Date.now()}`;
+    await fbSet(fbUrl, `rooms/${roomCode}/chat/${msgId}`, {
+      pid:myId, name:(me?.name||'?'), text, ts:Date.now()
+    });
+  };
+
+  const submitBid = async (artId, amount) => {
+    const updates={};
+    updates[`game/auctionBids/${artId}/${myId}`]=amount;
+    updates[`game/waitingFor/${myId}`]=null;
+    await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
+  };
+
+  const submitLoan = async (loan) => {
+    const updates={};
+    if(loan) {
+      updates[`players/${myId}/cash`]=(me.cash||0)+loan.original;
+      updates[`players/${myId}/loans/${loan.id}`]=loan;
+    }
+    updates[`game/loanDecisions/${myId}`]=true;
+    updates[`game/waitingFor/${myId}`]=null;
+    await fbPatch(fbUrl,`rooms/${roomCode}`,updates);
+  };
+
+  const simulateContinue = async () => {
+    const w={}; players.forEach(p=>{ w[p.id]=true; });
+    await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'auction','game/waitingFor':w});
+  };
+
+  const nextArtifact = async () => {
+    const arts=toArr(game.auctionArtifacts), artIdx=game.currentArtifactIdx||0;
+    if(artIdx<arts.length-1) {
+      const w={}; players.forEach(p=>{ w[p.id]=true; });
+      await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/currentArtifactIdx':artIdx+1,'game/auctionPhase':'bidding','game/waitingFor':w,'game/auctionWinner':null});
+    } else {
+      const w={}; players.forEach(p=>{ w[p.id]=true; });
+      await fbPatch(fbUrl,`rooms/${roomCode}`,{'game/phase':'loans','game/waitingFor':w,'game/loanDecisions':null});
+    }
+  };
+
+  const leave = () => {
+    localStorage.removeItem('subasta_room');
+    localStorage.removeItem('subasta_player');
+    window.location.hash='';
+    setRoom(''); setMyId(''); setRS(null); setStatus('idle');
+  };
+
+  const chatMessages = useMemo(()=>
+    Object.values(room?.chat||{}).sort((a,b)=>(a.ts||0)-(b.ts||0)).slice(-30)
+  ,[room]);
+
+  // ── RENDER ────────────────────────────────
+  if (!fbUrl) return <ConfigScreen onSave={saveFb}/>;
+  if (!roomCode||!myId) return <LobbyScreen fbUrl={fbUrl} onJoin={(code,pid,initialRoom)=>{ setRoom(code); setMyId(pid); if(initialRoom){setRS(initialRoom);setStatus('ok');} }}/>;
+  if (status==='idle'||status==='error'||!room) {
     return (
-      <div style={{minHeight:'100vh',background:BG,boxSizing:'border-box',
-        display:'flex',flexDirection:'column',position:'relative'}}>
-        {/* Top bar */}
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',
-          background:BG_CARD2,borderBottom:`1px solid ${BORDER}`,
-          padding:'5px 14px',flexShrink:0,gap:10}}>
-          {/* Left: month + progress */}
-          <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
-            <span style={{color:GOLD_DIM,fontFamily:"'Jost',sans-serif",
-              fontSize:11,letterSpacing:'0.1em'}}>
-              MES {game?.month||1}/12
-            </span>
-            <div style={{width:72,height:3,background:'#1a1000',borderRadius:2}}>
-              <div style={{width:`${Math.round(((game?.month||1)/12)*100)}%`,
-                height:'100%',background:`linear-gradient(90deg,${GOLD_DIM},${GOLD})`,
-                borderRadius:2}}/>
-            </div>
-          </div>
-          {/* Center: leaderboard */}
-          <div style={{flex:1,overflow:'hidden'}}>
-            <LeaderboardBar players={players} myId={myId}/>
-          </div>
-          {/* Right: sound + menu */}
-          <div style={{display:'flex',alignItems:'center',gap:6,flexShrink:0}}>
-            <SoundToggle/>
-            <button onClick={()=>setMenuOpen(v=>!v)}
-              style={{background:menuOpen?'rgba(218,165,32,0.12)':'none',
-                border:`1px solid ${menuOpen?GOLD_DIM:BORDER}`,
-                borderRadius:4,padding:'5px 10px',cursor:'pointer',
-                color:menuOpen?GOLD:GOLD_DIM,display:'flex',alignItems:'center',gap:5,
-                fontFamily:"'Jost',sans-serif",fontSize:11,transition:'all 0.15s'}}>
-              <Ico name="layers" size={13}/> Menú
-            </button>
-          </div>
-        </div>
-
-        {/* Menu overlay */}
-        {menuOpen && (
-          <div style={{position:'fixed',inset:0,zIndex:200,display:'flex',
-            justifyContent:'flex-end'}} onClick={()=>setMenuOpen(false)}>
-            {/* Backdrop */}
-            <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.65)'}}/>
-            {/* Panel */}
-            <div onClick={e=>e.stopPropagation()}
-              style={{position:'relative',width:320,height:'100%',
-                background:BG_CARD2,borderLeft:`1px solid ${BORDER}`,
-                display:'flex',flexDirection:'column',
-                boxShadow:'-8px 0 32px rgba(0,0,0,0.7)',
-                animation:'slideInRight 0.2s ease'}}>
-              {/* Panel header */}
-              <div style={{display:'flex',justifyContent:'space-between',
-                alignItems:'center',padding:'16px 18px',
-                borderBottom:`1px solid ${BORDER}`}}>
-                <div style={{display:'flex',alignItems:'center',gap:10}}>
-                  <Avatar name={me?.name||'?'} colorIndex={me?.colorIndex||0} size={32}/>
-                  <div>
-                    <GoldTitle size="sm">{me?.name}</GoldTitle>
-                    <div style={{color:'#888',fontFamily:"'Jost',sans-serif",
-                      fontSize:11,marginTop:1}}>
-                      <MoneyDisplay amount={calcNetWorthArr(me||{})} size="sm"/>
-                    </div>
-                  </div>
-                </div>
-                <button onClick={()=>setMenuOpen(false)}
-                  style={{background:'none',border:'none',cursor:'pointer',padding:'4px'}}>
-                  <Ico name="x" size={18} color="#666"/>
-                </button>
-              </div>
-
-              {/* Tabs */}
-              <div style={{display:'flex',borderBottom:`1px solid ${BORDER}`}}>
-                {[
-                  {id:'menu',label:'Menú'},
-                  {id:'portfolio',label:'Cartera'},
-                  {id:'rules',label:'Reglas'},
-                ].map(t=>(
-                  <button key={t.id} onClick={()=>setTab(t.id)}
-                    style={{flex:1,background:'none',border:'none',
-                      borderBottom:`2px solid ${tab===t.id?GOLD:'transparent'}`,
-                      padding:'10px 4px',cursor:'pointer',
-                      color:tab===t.id?GOLD:'#666',
-                      fontFamily:"'Jost',sans-serif",fontSize:12,
-                      transition:'all 0.15s'}}>
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Tab content */}
-              <div style={{flex:1,overflowY:'auto',padding:'14px 16px'}}>
-
-                {tab==='menu' && (
-                  <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                    {/* Room code */}
-                    <div style={{background:'#0e0800',border:`1px solid ${BORDER}`,
-                      borderRadius:6,padding:'10px 14px',marginBottom:4}}>
-                      <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
-                        fontSize:10,letterSpacing:'0.1em',marginBottom:4}}>CÓDIGO DE SALA</div>
-                      <div style={{fontFamily:"'Playfair Display',serif",
-                        fontSize:22,color:GOLD,letterSpacing:'0.2em'}}>{roomCode}</div>
-                    </div>
-
-                    {/* Current event */}
-                    {game?.currentEvent && (
-                      <div style={{marginBottom:4}}>
-                        <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
-                          fontSize:10,letterSpacing:'0.1em',marginBottom:6}}>EVENTO ACTUAL</div>
-                        <EventBanner event={game.currentEvent}/>
-                      </div>
-                    )}
-
-                    {/* Phase info */}
-                    <div style={{background:'#0e0800',border:`1px solid ${BORDER}`,
-                      borderRadius:6,padding:'10px 14px'}}>
-                      <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
-                        fontSize:10,letterSpacing:'0.1em',marginBottom:6}}>FASE ACTUAL</div>
-                      {[
-                        {id:'roulette',label:'Ruleta inicial'},
-                        {id:'invest',label:'Inversiones'},
-                        {id:'simulate',label:'Resultados'},
-                        {id:'auction',label:'Subasta'},
-                        {id:'loans',label:'Préstamos'},
-                        {id:'standings',label:'Clasificación'},
-                      ].map(p=>(
-                        <div key={p.id} style={{display:'flex',alignItems:'center',
-                          gap:8,marginBottom:4}}>
-                          <div style={{width:8,height:8,borderRadius:'50%',
-                            background: game?.phase===p.id?GOLD:BORDER,
-                            flexShrink:0}}/>
-                          <span style={{color:game?.phase===p.id?GOLD:'#555',
-                            fontFamily:"'Jost',sans-serif",fontSize:12}}>{p.label}</span>
-                        </div>
-                      ))}
-                    </div>
-
-                    <GoldDivider/>
-
-                    <GoldBtn variant="ghost" size="md"
-                      onClick={()=>{ setMenuOpen(false); }}
-                      style={{width:'100%',textAlign:'left',display:'flex',
-                        alignItems:'center',gap:8}}>
-                      <Ico name="x" size={14}/> Cerrar menú
-                    </GoldBtn>
-
-                    <GoldBtn variant="danger" size="md"
-                      onClick={()=>{
-                        if(window.confirm('¿Seguro que quieres abandonar la partida?')) leave();
-                      }}
-                      style={{width:'100%',display:'flex',alignItems:'center',gap:8}}>
-                      <Ico name="log-out" size={14} color="#fff"/> Abandonar partida
-                    </GoldBtn>
-                  </div>
-                )}
-
-                {tab==='portfolio' && (
-                  <div style={{display:'flex',flexDirection:'column',gap:12}}>
-                    {/* Cash */}
-                    <div style={{background:'#0e0800',border:`1px solid ${BORDER}`,
-                      borderRadius:6,padding:'10px 14px'}}>
-                      <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
-                        fontSize:10,letterSpacing:'0.1em',marginBottom:4}}>EFECTIVO</div>
-                      <MoneyDisplay amount={me?.cash||0} size="lg"/>
-                    </div>
-
-                    {/* Properties */}
-                    <div>
-                      <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
-                        fontSize:10,letterSpacing:'0.1em',marginBottom:8}}>
-                        PROPIEDADES ({myProps.length})
-                      </div>
-                      {myProps.length===0
-                        ? <p style={{color:'#555',fontFamily:"'Jost',sans-serif",fontSize:12}}>Sin propiedades</p>
-                        : myProps.map((p,i)=>(
-                          <div key={i} style={{background:'#0e0800',
-                            border:`1px solid oklch(40% 0.12 145deg)`,
-                            borderRadius:5,padding:'8px 11px',marginBottom:6}}>
-                            <div style={{color:GREEN_CLR,fontFamily:"'Playfair Display',serif",
-                              fontSize:13,fontWeight:600,marginBottom:3}}>{p.name}</div>
-                            <div style={{display:'flex',justifyContent:'space-between'}}>
-                              <span style={{color:'#888',fontFamily:"'Jost',sans-serif",fontSize:11}}>
-                                Valor: {fmtFull(p.value)}
-                              </span>
-                              <span style={{color:GREEN_CLR,fontFamily:"'Jost',sans-serif",fontSize:11}}>
-                                +{fmtFull(p.monthlyRent)}/mes
-                              </span>
-                            </div>
-                          </div>
-                        ))
-                      }
-                    </div>
-
-                    {/* Loans */}
-                    <div>
-                      <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
-                        fontSize:10,letterSpacing:'0.1em',marginBottom:8}}>
-                        DEUDAS ({myLoans.length})
-                      </div>
-                      {myLoans.length===0
-                        ? <p style={{color:'#555',fontFamily:"'Jost',sans-serif",fontSize:12}}>Sin deudas</p>
-                        : myLoans.map((l,i)=>(
-                          <div key={i} style={{background:'#0e0800',
-                            border:`1px solid ${RED}44`,borderRadius:5,
-                            padding:'8px 11px',marginBottom:6}}>
-                            <div style={{color:'#cc8888',fontFamily:"'Jost',sans-serif",
-                              fontSize:12,marginBottom:3}}>{l.label||'Préstamo'}</div>
-                            <div style={{display:'flex',justifyContent:'space-between'}}>
-                              <span style={{color:RED,fontFamily:"'Playfair Display',serif",
-                                fontSize:13,fontWeight:700}}>{fmtFull(l.remaining)}</span>
-                              <span style={{color:'#888',fontFamily:"'Jost',sans-serif",fontSize:11}}>
-                                {(l.rate*100).toFixed(0)}% · {l.monthsLeft}m
-                              </span>
-                            </div>
-                          </div>
-                        ))
-                      }
-                    </div>
-
-                    {/* Active effects */}
-                    {myEffects.length>0 && (
-                      <div>
-                        <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
-                          fontSize:10,letterSpacing:'0.1em',marginBottom:8}}>EFECTOS ACTIVOS</div>
-                        <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
-                          {myEffects.map((ef,i)=>(
-                            <EffectTag key={i}
-                              label={`${ef.label||ef.type} (${ef.monthsLeft}m)`}
-                              type={ef.type.includes('multiplier')||ef.type.includes('immunity')||ef.type.includes('boost')?'good':'bad'}/>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Artifacts */}
-                    {myArts.length>0 && (
-                      <div>
-                        <div style={{color:'#777',fontFamily:"'Jost',sans-serif",
-                          fontSize:10,letterSpacing:'0.1em',marginBottom:8}}>ARTEFACTOS</div>
-                        <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
-                          {myArts.map((a,i)=>(
-                            <EffectTag key={i} label={a.name}
-                              type={a.type==='blessing'?'good':a.type==='property'?'neutral':'bad'}/>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {tab==='rules' && (
-                  <div style={{color:'#999',fontFamily:"'Jost',sans-serif",
-                    fontSize:12,lineHeight:1.9,display:'flex',flexDirection:'column',gap:12}}>
-                    {[
-                      {title:'Objetivo',body:'Acumular el mayor patrimonio neto al final de los 12 meses. Patrimonio = efectivo + propiedades − deudas.'},
-                      {title:'Ruleta inicial',body:'Cada jugador gira la ruleta para obtener su capital inicial (entre $50K y $1M).'},
-                      {title:'Inversiones',body:'Cada mes decides cómo invertir tu efectivo en 6 sectores. Puedes contratar un seguro (3% del monto) para limitar pérdidas al 10%.'},
-                      {title:'Eventos del mes',body:'Cada mes ocurre un evento de mercado que modifica los retornos. Lee las noticias con cuidado — algunas son falsas.'},
-                      {title:'Subasta',body:'Se subastan 5 objetos (artefactos + propiedades). Las pujas son secretas. El que más ofrezca se lleva el objeto. Nadie sabe si es bendición o maldición hasta ganar.'},
-                      {title:'Artefactos',body:'Las bendiciones otorgan ventajas (dinero, propiedades, multiplicadores). Las maldiciones causan daño (pérdidas, deudas, propiedades incendiadas). La Campana de Oro te protege.'},
-                      {title:'Propiedades',body:'Dan renta mensual automática. Se pueden obtener en subasta o por artefactos.'},
-                      {title:'Préstamos',body:'Don Aurelio ofrece préstamos después de cada subasta. Cuidado con los intereses: se acumulan mensualmente.'},
-                      {title:'Quiebra',body:'Si tu efectivo llega a $0 con deudas pendientes, entras en quiebra. No puedes invertir ese mes. Don Aurelio tiene una oferta de rescate al 30%.'},
-                    ].map(({title,body})=>(
-                      <div key={title}>
-                        <div style={{color:GOLD_DIM,fontFamily:"'Playfair Display',serif",
-                          fontSize:13,fontWeight:600,marginBottom:3}}>{title}</div>
-                        <div>{body}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div style={{flex:1}}>{children}</div>
+      <div style={{minHeight:'100vh',background:BG,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
+        <GoldTitle size="md">Conectando...</GoldTitle>
+        {status==='error' && <><p style={{color:RED,fontFamily:"'Jost',sans-serif",fontSize:14}}>Error de conexión</p><GoldBtn onClick={leave}>Volver al inicio</GoldBtn></>}
       </div>
     );
-  };
+  }
+  if (!me) {
+    return <div style={{minHeight:'100vh',background:BG,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
+      <GoldTitle size="md">Jugador no encontrado</GoldTitle>
+      <GoldBtn onClick={leave}>Volver al inicio</GoldBtn>
+    </div>;
+  }
+
+  const phase      = game?.phase||'lobby';
+  const waiting    = game?.waitingFor||{};
+  const myDone     = waiting[myId]!==true;
+  const waitingArr = players.filter(p=>waiting[p.id]===true).map(p=>p.id);
+  const arts       = toArr(game?.auctionArtifacts);
+  const artIdx     = game?.currentArtifactIdx||0;
+
 
   if(phase==='lobby') return <WaitingRoom room={room} myId={myId} fbUrl={fbUrl} roomCode={roomCode} onLeave={leave}/>;
   if(phase==='roulette') return <RoulettePhaseScreen room={room} myId={myId} fbUrl={fbUrl} roomCode={roomCode}/>;

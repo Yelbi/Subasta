@@ -46,6 +46,8 @@ const Ico = ({ name, size=18, color='currentColor', strokeWidth=1.8 }) => {
     'star':           <><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></>,
     'copy':           <><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></>,
     'log-out':        <><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></>,
+    'volume-2':       <><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 010 14.14M15.54 8.46a5 5 0 010 7.07"/></>,
+    'volume-x':       <><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></>,
   };
   const invIconMap = { stocks:'trending-up', realestate:'home', business:'store', bonds:'file-text', crypto:'zap', commodities:'layers' };
   const resolved = invIconMap[name] || name;
@@ -329,8 +331,8 @@ function SoundToggle() {
         display:'flex',alignItems:'center',gap:5,fontFamily:"'Jost',sans-serif",fontSize:11,
         transition:'color 0.2s'}}>
       {muted
-        ? <><Ico name="x" size={12}/> Sonido</>
-        : <><Ico name="star" size={12}/> Sonido</>}
+        ? <><Ico name="volume-x" size={12}/> Sonido</>
+        : <><Ico name="volume-2" size={12}/> Sonido</>}
     </button>
   );
 }

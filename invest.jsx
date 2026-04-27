@@ -223,7 +223,9 @@ function InvestmentPhase({ player, month, gameSeed, onConfirm, hasOracle, oracle
   const remaining  = (player.cash||0) - total - insureCost;
   const isBankrupt = (player.cash||0) <= 0 && Object.values(player.loans||{}).reduce((s,l)=>s+(l.remaining||0),0) > 0;
   const forcedInvest = (player.activeEffects||[]).some(e=>e.type==='forced_invest'&&(e.monthsLeft||0)>0);
-  const canConfirm = !isDone && remaining>=0 && !(forcedInvest&&remaining>0);
+  // Bug fix: when forced_invest is active, insurance cost counts toward "invested" so
+  // remaining can be exactly -insureCost when all cash is invested. Allow it.
+  const canConfirm = !isDone && remaining>=-insureCost && !(forcedInvest&&remaining>insureCost);
 
   const handleConfirm = () => {
     if (!canConfirm) return;
